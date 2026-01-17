@@ -1,0 +1,339 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Services = ReplicatedStorage:WaitForChild("MyServices"):WaitForChild("Services")
+local CharacterStats = require(Services:WaitForChild("CharacterStats"))
+local MobRegistry = require(Services:WaitForChild("MobRegistry"))
+
+local StateManager = {}
+
+-- structure: ActiveStates[Entity][StateName] = { Data, ExpiresAt }
+local ActiveStates = {}
+
+local function GetStat(entity, statName)
+	if entity:IsA("Player") then
+		return CharacterStats:GetStat(entity, statName)
+	else
+		return entity:GetAttribute(statName)
+	end
+end
+
+local function SetStat(entity, statName, value)
+	if entity:IsA("Player") then
+		CharacterStats.SetStat(entity, statName, value)
+	else
+		entity:SetAttribute(statName, value)
+	end
+end
+
+-- FOR FUTURE: MobRegistry can probably handle npc states
+local BuffDefinitions = {
+	-- === BUFFS ===
+
+	["Lucky"] = {
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end
+			local current = GetStat(entity, "Luck", 1)
+			local bonus = current -- Double luck
+			SetStat(entity, "Luck", current + bonus)
+			return { Bonus = bonus }
+		end,
+		OnRemove = function(entity, data)
+			local current = GetStat(entity, "Luck", 1)
+			SetStat(entity, "Luck", math.max(0, current - data.Bonus))
+		end
+	},
+	
+	["Strength"] = {
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end
+			local current = GetStat(entity, "Damage")
+			local bonus = current
+			SetStat(entity, "Damage", current + bonus)
+			return { Bonus = bonus }
+		end,
+		OnRemove = function(entity, data)
+			local current = GetStat(entity, "Damage")
+			SetStat(entity, "Damage", math.max(0, current - data.Bonus))
+		end
+	},
+
+	["Speed"] = {
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end
+
+			local hum = entity.Character and entity.Character:FindFirstChild("Humanoid")
+			if not hum and entity:FindFirstChild("Humanoid") then hum = entity.Humanoid end
+
+			if hum then
+				hum.WalkSpeed = hum.WalkSpeed + 12
+				return { Bonus = 12 }
+			end
+		end,
+		OnRemove = function(entity, data)
+			local hum = entity.Character and entity.Character:FindFirstChild("Humanoid")
+			if not hum and entity:FindFirstChild("Humanoid") then hum = entity.Humanoid end
+
+			if hum and data then
+				hum.WalkSpeed = hum.WalkSpeed - data.Bonus
+			end
+		end
+	},
+
+	-- === DEBUFFS ===
+
+	["Pause"] = {
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end -- Do not stack pauses
+
+			local data = {}
+			
+			local char = entity
+			if char.Parent ~= workspace then
+				local currentDef = GetStat(entity, "IncomingDamageMulti")
+				local currentSpeed = GetStat(entity, "Speed")
+				local currentJump = GetStat(entity, "JumpPower")
+				
+				data.OldJump = currentJump
+				data.OldSpeed = currentSpeed
+				data.OldDef = currentDef
+				char = entity.Character or entity
+			else
+				data = MobRegistry.GetData(entity)
+				print(data)
+				data.OldJump = 50
+				
+			end
+			
+			char:SetAttribute("IsPaused", true)
+			local hum = char:FindFirstChild("Humanoid")
+			local root = char:FindFirstChild("HumanoidRootPart")
+			
+			
+			data.WasAnchored = false
+			data.WasAutoRotate = true
+
+			SetStat(entity, "IncomingDamageMulti", 0)
+			if hum then
+				data.WasAutoRotate = hum.AutoRotate
+
+				hum.WalkSpeed = 0
+				hum.JumpPower = 0
+				hum.AutoRotate = false -- Stop them from turning to face targets
+			end
+
+			-- Anchor Root (Stops falling/pushing)
+			if root then
+				data.WasAnchored = root.Anchored
+				root.Anchored = true
+			end
+
+			return data
+		end,
+
+		OnRemove = function(entity, data)
+			print("attempting to remove pause")
+			print(data)
+			if not data then return end
+			
+			local char = entity
+			if char.Parent ~= workspace then
+				char = entity.Character or entity
+			end
+			
+			char:SetAttribute("IsPaused", nil)
+			local hum = char:FindFirstChild("Humanoid")
+			local root = char:FindFirstChild("HumanoidRootPart")
+
+			if hum then
+				hum.WalkSpeed = data.OldSpeed
+				hum.JumpPower = data.OldJump
+				hum.AutoRotate = data.WasAutoRotate
+			end
+
+			if root then
+				root.Anchored = data.WasAnchored
+			end
+			CharacterStats:RefreshCharacter(entity)
+		end
+	},
+	["Cold"] = {
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end -- Don't stack slows
+
+			local hum = entity.Character and entity.Character:FindFirstChild("Humanoid") or entity:FindFirstChild("Humanoid")
+
+			if hum then
+				-- Calculate 40% slow
+				local slowAmount = hum.WalkSpeed * 0.4 
+				hum.WalkSpeed = hum.WalkSpeed - slowAmount
+
+				-- Turn blue-ish
+				local char = entity.Character or entity
+				for _, part in pairs(char:GetChildren()) do
+					if part:IsA("BasePart") then
+						part.Color = Color3.fromRGB(150, 200, 255)
+					end
+				end
+
+				return { Bonus = slowAmount, OriginalColor = Color3.fromRGB(255,255,255) } 
+			end
+		end,
+		OnRemove = function(entity, data)
+			local hum = entity.Character and entity.Character:FindFirstChild("Humanoid") or entity:FindFirstChild("Humanoid")
+			if hum and data then
+				hum.WalkSpeed = hum.WalkSpeed + data.Bonus
+				-- Reset Color (Simple implementation)
+				local char = entity.Character or entity
+				for _, part in pairs(char:GetChildren()) do
+					if part:IsA("BasePart") then
+						part.Color = data.OriginalColor or Color3.fromRGB(255,255,255)
+					end
+				end
+			end
+		end
+	},
+
+	["Poison"] = {
+		TickRate = 1, -- Run logic every 1 second
+		OnApply = function(entity, duration, existingData)
+			-- For poison, we don't change stats, we just tag them
+			-- If already poisoned, we might just extend duration (handled by manager)
+			if existingData then return nil end
+
+			-- Visual: Green Particles (Optional)
+			return {} 
+		end,
+		OnTick = function(entity)
+			-- Deal % Max Health Damage
+			local hum = entity.Character and entity.Character:FindFirstChild("Humanoid") or entity:FindFirstChild("Humanoid")
+			if hum and hum.Health > 0 then
+				local dmg = math.max(5, hum.MaxHealth * 0.05) -- 5% HP or 5 flat
+				hum:TakeDamage(dmg)
+
+				-- Show Damage Number visual here if you have a system for it
+				print(entity.Name .. " took poison damage: " .. dmg)
+			end
+		end,
+		OnRemove = function(entity, data)
+			-- Remove particles
+		end
+	},
+
+	["Weakness"] = {
+		-- Reduces Outgoing Damage
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end
+
+			-- Assuming you have a "DamageMulti" attribute or stat
+			local current = GetStat(entity, "DamageMulti", 1)
+			local penalty = current * 0.3 -- Reduce damage by 30%
+
+			SetStat(entity, "DamageMulti", current - penalty)
+			return { Penalty = penalty }
+		end,
+		OnRemove = function(entity, data)
+			local current = GetStat(entity, "DamageMulti", 1)
+			SetStat(entity, "DamageMulti", current + data.Penalty)
+		end
+	},
+
+	["Fragility"] = {
+		-- Increases Incoming Damage
+		OnApply = function(entity, duration, existingData)
+			if existingData then return nil end
+
+			-- Assuming you have a "DefenseMulti" or "IncomingDamageMulti"
+			-- If you don't have this stat, you need to add it to your DamageHandler!
+			local current = GetStat(entity, "IncomingDamageMulti", 1)
+			local penalty = 0.5 -- Take 50% MORE damage
+
+			SetStat(entity, "IncomingDamageMulti", current + penalty)
+			return { Penalty = penalty }
+		end,
+		OnRemove = function(entity, data)
+			local current = GetStat(entity, "IncomingDamageMulti", 1)
+			SetStat(entity, "IncomingDamageMulti", current - data.Penalty)
+		end
+	}
+}
+
+local function GetEntityStates(entity)
+	if not ActiveStates[entity] then
+		ActiveStates[entity] = {}
+	end
+	return ActiveStates[entity]
+end
+
+function StateManager.RemoveBuff(entity, buffName)
+	local entityStates = GetEntityStates(entity)
+	local stateData = entityStates[buffName]
+	print("statedata for")
+	print(entity)
+	print(stateData)
+	if stateData then
+		-- Force expiration logic immediately
+		stateData.ExpiresAt = 0 
+		-- The loop in ApplyBuff will see this next tick and run the cleanup
+	end
+	print(stateData)
+end
+
+function StateManager.ApplyBuff(entity, buffName, duration)
+	local def = BuffDefinitions[buffName]
+	if not def then warn("Buff not found:", buffName) return end
+
+	local entityStates = GetEntityStates(entity)
+	local stateData = entityStates[buffName]
+	local currentTime = os.time()
+
+	if stateData and currentTime < stateData.ExpiresAt then
+		stateData.ExpiresAt = stateData.ExpiresAt + duration
+		print(buffName .. " Extended on " .. entity.Name)
+
+	else
+		local customData = def.OnApply(entity, duration, nil)
+
+		entityStates[buffName] = {
+			Data = customData,
+			ExpiresAt = currentTime + duration
+		}
+
+		task.spawn(function()
+			local myState = entityStates[buffName]
+
+			-- supports poison
+			while os.time() < myState.ExpiresAt do
+				local remaining = myState.ExpiresAt - os.time()
+
+				if def.TickRate then
+					-- for DoT
+					local waitTime = math.min(def.TickRate, remaining)
+					task.wait(waitTime)
+
+					if entityStates[buffName] == myState and os.time() <= myState.ExpiresAt then
+						if def.OnTick then def.OnTick(entity) end
+					end
+				else
+					-- standard loop
+					task.wait(remaining)
+				end
+
+				-- duration extended mid-sleep
+				-- while loop condition `os.time() < ExpiresAt` handles repeat
+			end
+
+			-- CLEANUP
+			if entityStates[buffName] == myState then
+				if def.OnRemove then def.OnRemove(entity, myState.Data) end
+				entityStates[buffName] = nil
+
+				if next(entityStates) == nil then
+					ActiveStates[entity] = nil
+				end
+			end
+		end)
+	end
+end
+
+return StateManager
