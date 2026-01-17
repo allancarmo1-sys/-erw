@@ -1,0 +1,186 @@
+local ServerScriptService = game:GetService("ServerScriptService")
+local SpawnerModule = require(ServerScriptService.MobSpawner)
+local Players = game:GetService("Players")
+
+local GameSession = {}
+local Spawner = SpawnerModule.new()
+
+-- Add mobs here dingus
+local MOB_TYPES = {
+	Creep = {
+		ModelName = "Creep",
+		Health = 100, Damage = 10, Speed = 10, Lifetime = 45,
+		BaseEXP = 10, Elite = true, Weight = 100
+	},
+	Wasp = {
+		ModelName = "Wasp",
+		Health = 50, Damage = 5, Speed = 14, Lifetime = 45,
+		BaseEXP = 15, Elite = false, Weight = 50
+	},
+	Tank = {
+		ModelName = "Tank",
+		Health = 300, Damage = 25, Speed = 8, Lifetime = 45,
+		BaseEXP = 50, Elite = false, Weight = 20
+	},
+	EliteCreep = {
+		ModelName = "EliteCreep",
+		Health = 500, Damage = 30, Speed = 4, Lifetime = 120,
+		BaseEXP = 100, Elite = false, Weight = 10
+	},
+	BossCreep = {
+		ModelName = "BossCreep",
+		Health = 1000, Damage = 50, Speed = 4, Lifetime = 99999,
+		BaseEXP = 1000, Elite = true, Weight = 5
+	}
+}
+
+-- Add maps here broski
+local MAP_DATA = {
+	["Forest"] = {
+		Waves = {
+			{
+				Type = "Wave",
+				Name = "*yawns cutely* wave 1",
+				Duration = 30, BaseFrequency = .75,
+				MinDist = 40, MaxDist = 80, Pattern = "Random",
+				Mobs = { MOB_TYPES.Creep, MOB_TYPES.EliteCreep, MOB_TYPES.Wasp, MOB_TYPES.Tank}
+			},
+			{
+				Type = "Wave",
+				Name = "SWARM!!!!",
+				Duration = 1, BaseFrequency = 5,
+				MinDist = 30, MaxDist = 70, Pattern = "Circle",
+				Mobs = { MOB_TYPES.Creep, MOB_TYPES.Tank }
+			},
+			{
+				Type = "Wave",
+				Name = "lmao wave 3 what do you expect",
+				Duration = 1, BaseFrequency = 10,
+				MinDist = 30, MaxDist = 70, Pattern = "Random", 
+				Mobs = { MOB_TYPES.EliteCreep, MOB_TYPES.Tank }
+			},
+			{
+				Type = "Boss",
+				Name = "FOREST TITAN",
+				Mob = MOB_TYPES.BossCreep
+			},
+		}
+	},
+
+	["Desert"] = {
+		Waves = {
+			{
+				Name = "Sandstorm",
+				Duration = 120, BaseFrequency = 0.8,
+				MinDist = 50, MaxDist = 100, Pattern = "Random",
+				Mobs = { MOB_TYPES.Runner }
+			},
+			{
+				Name = "SAND KING",
+				Duration = 999,
+				BaseFrequency = 10,
+				MinDist = 40, MaxDist = 80, Pattern = "Random",
+				Mob = { MOB_TYPES.BossTitan }
+			},
+		}
+	}
+}
+
+local function GenerateEndlessWave(waveNumber, difficulty)
+	local pool = { MOB_TYPES.Creep, MOB_TYPES.EliteCreep }
+
+	if difficulty >= 2.0 then
+		table.insert(pool, MOB_TYPES.Tank)
+	end
+
+	if difficulty >= 4.0 then
+		table.insert(pool, MOB_TYPES.BossCreep)
+	end
+
+	-- Every 5th wave is a swarm, otherwise random
+	local pattern = (waveNumber % 5 == 0) and "Circle" or "Random"
+
+	return {
+		Type = "Wave",
+		Name = "Endless Wave " .. waveNumber,
+		Duration = 60 + (waveNumber * 2),
+		BaseFrequency = 2.0,
+		MinDist = 40, 
+		MaxDist = 80,
+		Pattern = pattern,
+		Mobs = pool
+	}
+end
+
+function GameSession.Start(mapName, initialDifficulty, playerCount, isEndless)
+	task.spawn(function()
+		local mapConfig = MAP_DATA[mapName]
+		if not mapConfig then
+			warn("Invalid Map Name: " .. tostring(mapName))
+			return
+		end
+
+		print(string.format("Starting %s | Endless: %s", mapName, tostring(isEndless)))
+
+		local currentDifficulty = initialDifficulty
+
+		if mapConfig then 
+			for i, waveData in ipairs(mapConfig.Waves) do
+
+				if waveData.Type == "Wave" then
+					local waveTask = Spawner:StartWave(nil, currentDifficulty, playerCount, waveData)
+					task.wait(waveData.Duration)
+					if waveTask then task.cancel(waveTask) end
+
+				elseif waveData.Type == "Boss" then
+					print("!!! BOSS INCOMING !!!")
+
+					local bossModel = Spawner:SpawnBoss(waveData.Mob, currentDifficulty, playerCount)
+
+					if bossModel then
+						local humanoid = bossModel:WaitForChild("Humanoid")
+
+						humanoid.Died:Wait()
+						print("!!! BOSS DEFEATED !!!")
+						-- Wait 3 seconds for victory screen
+						task.wait(3)
+					else
+						warn("Critical Error: Boss failed to spawn (No valid land?)")
+						-- skip the wave so the game doesn't break
+					end
+				end
+
+				currentDifficulty = currentDifficulty + 0.5
+				task.wait(3)
+			end
+		end
+		
+		if isEndless then
+			print("--- ENTERING ENDLESS MODE ---")
+			local endlessWaveCount = 1
+
+			while true do
+				if #Players:GetPlayers() == 0 then break end
+
+				local waveData = GenerateEndlessWave(endlessWaveCount, currentDifficulty)
+
+				print(string.format(">>> %s | Diff: %.1f", waveData.Name, currentDifficulty))
+
+				local waveTask = Spawner:StartWave(nil, currentDifficulty, playerCount, waveData)
+				task.wait(waveData.Duration)
+				if waveTask then task.cancel(waveTask) end
+
+				endlessWaveCount = endlessWaveCount + 1
+				currentDifficulty = currentDifficulty + 0.5
+
+				-- Resting period reduces as waves go on
+				task.wait(math.max(1, 5 - (endlessWaveCount * 0.1))) 
+			end
+		else
+			print("GAME OVER - VICTORY")
+			-- FireClient(AllPlayers, "VictoryScreen")
+		end
+	end)
+end
+
+return GameSession
