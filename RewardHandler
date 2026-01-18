@@ -1,0 +1,198 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+-- Dependencies
+local Services = ReplicatedStorage:WaitForChild("MyServices"):WaitForChild("Services")
+local CharacterStats = require(Services:WaitForChild("CharacterStats"))
+
+local RewardHandler = {}
+
+-- === CONFIGURATION ===
+local function getMaxWepSlots(player)
+	CharacterStats:GetStat(player, "MaxWeapons")
+end
+local function getMaxCharmSlots(player)
+	CharacterStats:GetStat(player, "MaxCharms")
+end
+
+-- === RARITY WEIGHTS (Base Chance) ===
+local RARITY_DATA = {
+	{ Name = "Common",    Weight = 70,  Mult = 1.0, Color = Color3.fromRGB(200, 200, 200) },
+	{ Name = "Uncommon",  Weight = 25,  Mult = 1.2, Color = Color3.fromRGB(50, 200, 50)   },
+	{ Name = "Rare",      Weight = 10,  Mult = 1.5, Color = Color3.fromRGB(50, 50, 255)   },
+	{ Name = "Epic",      Weight = 4,   Mult = 2.0, Color = Color3.fromRGB(200, 50, 200)  },
+	{ Name = "Legendary", Weight = 1,   Mult = 3.0, Color = Color3.fromRGB(255, 150, 0)   }
+}
+
+local ITEM_DATABASE = {
+	-- WEAPONS
+	["Sniper"] = { Type = "Weapon", MaxLevel = 8, Description = "Pierces through enemies indefinitely." },
+	["Boomerang"] = { Type = "Weapon", MaxLevel = 8, Description = "Returns to the player after a short distance." },
+	["Ricochet"] = { Type = "Weapon", MaxLevel = 8, Description = "Bounces between nearby enemies." },
+	["WaspGun"] = { Type = "Weapon", MaxLevel = 8, Description = "Fires homing wasps." },
+
+	-- CHARMS (Passives)
+	["Spinach"] = { Type = "Charm", MaxLevel = 5, Stat = "Damage", Amount = 0.1, Description = "Increases damage by 10%." },
+	["EmptyHeart"] = { Type = "Charm", MaxLevel = 5, Stat = "MaxHealth", Amount = 0.2, Description = "Increases max health by 20%." },
+	["Clover"] = { Type = "Charm", MaxLevel = 5, Stat = "Luck", Amount = 10, Description = "Increases luck." },
+	["EnergyDrink"] = { Type = "Charm", MaxLevel = 5, Stat = "Speed", Amount = 2, Description = "Increases movement speed." },
+
+	-- CONSUMABLES (Fallback if everything is maxed)
+	["GoldBag"] = { Type = "Consumable", Description = "Instantly gain 50 Gold." },
+	["Chicken"] = { Type = "Consumable", Description = "Heal 30 HP." }
+}
+
+-- === HELPER: GET PLAYER INVENTORY ===
+-- You likely need to adjust this to match how you actually store items.
+-- For now, I assume a folder structure or a table in the player attributes.
+local function GetPlayerInventory(player)
+	-- Mock Inventory Structure: { ["Sniper"] = 1, ["Spinach"] = 3 }
+	local inv = {}
+	local weaponCount = 0
+	local charmCount = 0
+
+	-- Example: checking a Folder in the player
+	local invFolder = player:FindFirstChild("Inventory")
+	if invFolder then
+		for _, item in pairs(invFolder:GetChildren()) do
+			local level = item:GetAttribute("Level") or 1
+			inv[item.Name] = level
+
+			-- Check type via DB to count slots
+			local dbData = ITEM_DATABASE[item.Name]
+			if dbData then
+				if dbData.Type == "Weapon" then weaponCount += 1 end
+				if dbData.Type == "Charm" then charmCount += 1 end
+			end
+		end
+	end
+
+	return inv, weaponCount, charmCount
+end
+
+-- === HELPER: CALCULATE RARITY ===
+local function RollRarity(playerLuck)
+	local totalWeight = 0
+	local pool = {}
+
+	-- Luck affects the weight of higher rarities
+	-- Formula: BaseWeight * (1 + Luck/100)
+	local luckFactor = math.max(0, playerLuck or 0) / 50 
+
+	for _, rarity in ipairs(RARITY_DATA) do
+		-- Common gets LESS frequent with luck, others get MORE frequent
+		local weight = rarity.Weight
+		if rarity.Name == "Common" then
+			weight = math.max(1, weight - (luckFactor * 10))
+		else
+			weight = weight + (weight * luckFactor)
+		end
+
+		table.insert(pool, { Data = rarity, Weight = weight })
+		totalWeight += weight
+	end
+
+	local r = math.random() * totalWeight
+	local c = 0
+	for _, entry in ipairs(pool) do
+		c += entry.Weight
+		if r <= c then return entry.Data end
+	end
+	return RARITY_DATA[1] -- Fallback to Common
+end
+
+-- === MAIN: GENERATE OPTIONS ===
+function RewardHandler.RollOptions(player, optionCount)
+	optionCount = optionCount or 3
+	local currentInv, wCount, cCount = GetPlayerInventory(player)
+	local playerLuck = CharacterStats:GetStat(player, "Luck") or 0
+
+	local possiblePool = {}
+
+	-- 1. BUILD VALID POOL
+	for id, data in pairs(ITEM_DATABASE) do
+		local currentLevel = currentInv[id] or 0
+		local isOwned = currentLevel > 0
+
+		-- Logic for WEAPONS
+		if data.Type == "Weapon" then
+			if isOwned then
+				-- Upgrade path
+				if currentLevel < data.MaxLevel then
+					table.insert(possiblePool, { Id = id, IsNew = false, Level = currentLevel + 1 })
+				end
+			else
+				-- New Item path (Check Slots)
+				if wCount < MAX_WEAPON_SLOTS then
+					table.insert(possiblePool, { Id = id, IsNew = true, Level = 1 })
+				end
+			end
+
+			-- Logic for CHARMS
+		elseif data.Type == "Charm" then
+			if isOwned then
+				if currentLevel < data.MaxLevel then
+					table.insert(possiblePool, { Id = id, IsNew = false, Level = currentLevel + 1 })
+				end
+			else
+				if cCount < MAX_CHARM_SLOTS then
+					table.insert(possiblePool, { Id = id, IsNew = true, Level = 1 })
+				end
+			end
+		end
+	end
+
+	--if #possiblePool < optionCount then
+	--	table.insert(possiblePool, { Id = "GoldBag", IsNew = false, Level = 0 })
+	--	table.insert(possiblePool, { Id = "Chicken", IsNew = false, Level = 0 })
+	--end
+
+	local selectedOptions = {}
+	local usedIndices = {}
+
+	for i = 1, optionCount do
+		-- Pick a random item from pool
+		if #possiblePool == 0 then break end 
+
+		local index
+		repeat 
+			index = math.random(1, #possiblePool)
+		until not usedIndices[index] or #possiblePool <= optionCount -- Safety break
+
+		usedIndices[index] = true
+		local choice = possiblePool[index]
+		local dbData = ITEM_DATABASE[choice.Id]
+
+		local rarity = RollRarity(playerLuck)
+
+		local optionData = {
+			Id = choice.Id,
+			Name = choice.Id, 
+			Type = dbData.Type,
+			IsNew = choice.IsNew,
+			NextLevel = choice.Level,
+			Rarity = rarity.Name,
+			RarityColor = rarity.Color,
+			Description = dbData.Description
+		}
+
+		-- Adjust Description based on Rarity Multiplier
+		if dbData.Amount then
+			local finalVal = dbData.Amount * rarity.Mult
+			-- Round to 1 decimal
+			finalVal = math.floor(finalVal * 10 + 0.5) / 10
+
+			-- Append stat boost info
+			if dbData.Stat then
+				optionData.StatBoost = { Stat = dbData.Stat, Value = finalVal }
+				optionData.Description = optionData.Description .. " (+" .. finalVal .. " " .. dbData.Stat .. ")"
+			end
+		end
+
+		table.insert(selectedOptions, optionData)
+	end
+
+	return selectedOptions
+end
+
+return RewardHandler
