@@ -1,0 +1,42 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Events = ReplicatedStorage:WaitForChild("GameEvents")
+
+local LevelUpFrame = script.Parent:WaitForChild("LevelUpBar")
+local expBar = LevelUpFrame:WaitForChild("Bar")
+
+local rewardFrame = script.Parent:WaitForChild("ChooseReward")
+local option1Button = rewardFrame:WaitForChild("Option1Frame"):WaitForChild("OptionButton")
+local option2Button = rewardFrame:WaitForChild("Option2Frame"):WaitForChild("OptionButton")
+local option3Button = rewardFrame:WaitForChild("Option3Frame"):WaitForChild("OptionButton")
+
+local RewardSelectedEvent = Events:FindFirstChild("RewardSelected") or Instance.new("RemoteEvent", Events)
+RewardSelectedEvent.Name = "RewardSelected"
+
+Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
+	local percent = math.clamp(current / max, 0, 1)
+	expBar.Size = UDim2.new(percent, 0, 1, 0)
+	print("EXP: " .. current .. "/" .. max .. " (Lvl " .. level .. ")")
+end)
+
+Events.LevelUp.OnClientEvent:Connect(function(newLevel)
+	print("Level Up! Choose a reward!")
+	rewardFrame.Visible = true
+end)
+
+function SelectReward(rewardId)
+	rewardFrame.Visible = false
+	RewardSelectedEvent:FireServer(rewardId)
+	print("reward selected event fired")
+end
+
+option1Button.MouseButton1Click:Connect(function()
+	SelectReward(1)
+end)
+
+option2Button.MouseButton1Click:Connect(function()
+	SelectReward(2)
+end)
+
+option3Button.MouseButton1Click:Connect(function()
+	SelectReward(3)
+end)
