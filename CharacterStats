@@ -1,0 +1,156 @@
+local Players = game:GetService("Players")
+local CharacterStats = {}
+
+local sessionStats = {}
+
+local DEFAULT_STATS = { -- F = flat, M = multiplier
+	MaxHP = 100, --F
+	HPRegen = 10, --F
+	Lifesteal = 0, --M
+	Overheal = 0, --F
+	Shield = 0, --F
+	Armor = 0, --M
+	Thorns = 0, --F
+	Evasion = 0, --M
+	
+	Damage = 1, --M
+	CritChance = 0, --M
+	CritDamage = 0, --M
+	Cooldown = 1, --M
+	Amount = 0, --F
+	Bounces = 0, --F
+	
+	Size = 1, --M
+	AttackSpeed = 1, --M
+	Duration = 1, --F
+	DamageToElites = 1, --M
+	Knockback = 0, --F
+	Speed = 5, --M
+	
+	ExtraJumps = 0, --F
+	JumpPower = 3, --M
+	Luck = 1, --M
+	Difficulty = 1, --F
+	
+	Magnet = 1, --M
+	EXPGain = 1, --F
+	GoldGain = 1, --F
+	
+	-- pet stats
+	PetAmount = 1,
+	PetDamage = 1,
+	PetCooldown = 1,
+	
+	-- for testing, leave at 1. On release, at 0
+	Rerolls = 1,
+	Skips = 1,
+	Banishes = 1,
+	ExtraLives = 1,
+	
+	-- invisible stats
+	IncomingDamageMulti = 1, --M
+	MaxWeapons = 2,
+	Weapons = {},
+	MaxCharms = 2,
+	Charms = {},
+	
+}
+
+function CharacterStats.InitPlayer(player)
+	local joinData = player:GetJoinData()
+	local teleportData = joinData and joinData.TeleportData
+
+	-- Use teleport data if available later when it works
+	local function deepCopy(original)
+		local copy = {}
+
+		for k, v in original do
+			copy[k] = type(v) == "table" and deepCopy(v) or v
+		end
+
+		return copy
+	end
+
+	sessionStats[player] = deepCopy(DEFAULT_STATS)
+
+	player.CharacterAdded:Connect(function(char)
+		task.wait() 
+		CharacterStats:RefreshCharacter(player)
+	end)
+
+	if player.Character then
+		CharacterStats:RefreshCharacter(player)
+	end
+
+	print("Stats initialized for " .. player.Name)
+end
+
+function CharacterStats.GetStats(player)
+	local data = sessionStats[player]
+	
+	if data then
+		return data
+	end
+	
+	return DEFAULT_STATS
+end
+
+function CharacterStats:GetStat(player, statName)
+	local data = sessionStats[player]
+	
+	if data and data[statName] ~= nil then
+		return data[statName]
+	end
+	print(statName)
+	print(statName .." stat not found dingus, returning default but def fix this")
+	
+	self = DEFAULT_STATS[statName]
+	return self
+end
+
+function CharacterStats.SetStat(player, statName, value)
+	local data = sessionStats[player]
+	
+	if data and data[statName] ~= nil then
+		data[statName] = value
+		print("Set " .. statName .. " to " .. value .. " for " .. player.Name)
+		
+		if statName == "MaxHP" or statName == "Speed" or statName == "JumpPower" then
+			CharacterStats.RefreshCharacter(player)
+		end
+		
+		return
+	end
+	
+	print("Stat " .. statName .. " not found for " .. player.Name)
+	return
+end
+
+function CharacterStats:RefreshCharacter(player)
+	if not player or not player.Character then 
+		print("bro LITERALLY cannot be refreshed")
+		return 
+	end
+	
+	local char = player.Character
+	local hum = char and char:FindFirstChild("Humanoid")
+	local data = sessionStats[player]
+
+	if hum and data then
+		hum.MaxHealth = data.MaxHP
+		hum.Health += data.MaxHP
+
+		hum.JumpPower = data.JumpPower * 50
+		hum.WalkSpeed = data.Speed * 16
+	else
+		print("lil bro" .. player .. "aint getting refreshed today")
+	end
+	print("refreshed")
+	return
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	sessionStats[player] = nil
+end)
+
+return CharacterStats
