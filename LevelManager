@@ -16,7 +16,7 @@ local OfferedOptions = {}
 local BASE_EXP_REQ = 100
 local GROWTH_FACTOR = 1.2
 local PLAYER_SCALING = 0.5
-local SELECTION_TIMEOUT = 15
+local SELECTION_TIMEOUT = 15 -- Duration sent to client
 
 -- === STATE ===
 local GlobalLevel = 1
@@ -55,27 +55,34 @@ local function FireExpUpdate()
 	ExpUpdateEvent:FireAllClients(GlobalExp, CurrentThreshold, GlobalLevel)
 end
 
--- This function decides whether to Unpause or Level Up AGAIN
 local function ProcessNextStep()
-	-- 1. Check if we have enough EXP for ANOTHER level
+	-- Reset flags for recursion
+	IsLevelingUp = false 
+	PendingSelections = {}
+	OfferedOptions = {} 
+
 	if GlobalExp >= CurrentThreshold then
 		print("Multiple levels detected! Triggering next level immediately...")
-		task.wait(0.5) -- Slight buffer for UX
+		task.wait(0.5) 
 		LevelManager.TriggerLevelUp()
 	else
-		-- 2. No more levels pending? Resume the game.
 		print("Leveling complete. Resuming game.")
-		IsLevelingUp = false
-		PendingSelections = {}
 
-		-- Unpause Logic
 		if GameSession.SetPause then
 			GameSession.SetPause(false)
 		else
-			-- Fallback if GameSession function is missing/renamed
 			PauseEvent:Fire(false)
 			workspace:SetAttribute("GamePaused", false)
 		end
+	end
+end
+
+local function ApplyReward(player, choiceIndex)
+	local validOptions = OfferedOptions[player]
+	if validOptions and validOptions[choiceIndex] then
+		local choice = validOptions[choiceIndex]
+		CharacterStats.AddItem(player, choice.Id, choice.Type, choice.Payload)
+		print("Applied reward " .. choice.Id .. " to " .. player.Name)
 	end
 end
 
@@ -94,7 +101,6 @@ end
 function LevelManager.AddExp(amount)
 	GlobalExp = GlobalExp + amount
 
-	-- Only trigger if not currently leveling up
 	if not IsLevelingUp and GlobalExp >= CurrentThreshold then
 		LevelManager.TriggerLevelUp()
 	else
@@ -103,9 +109,9 @@ function LevelManager.AddExp(amount)
 end
 
 function LevelManager.TriggerLevelUp()
-	if IsLevelingUp then return end -- Prevent double triggers
+	if IsLevelingUp then return end 
 	IsLevelingUp = true
-	
+
 	GlobalExp = GlobalExp - CurrentThreshold
 
 	GlobalLevel = GlobalLevel + 1
@@ -113,6 +119,7 @@ function LevelManager.TriggerLevelUp()
 
 	print("LEVEL UP! New Level: " .. GlobalLevel .. " | Req: " .. CurrentThreshold)
 
+	-- Pause Game
 	if GameSession.SetPause then
 		GameSession.SetPause(true)
 	else
@@ -120,22 +127,33 @@ function LevelManager.TriggerLevelUp()
 		workspace:SetAttribute("GamePaused", true)
 	end
 
+	-- Setup Players
 	PendingSelections = {}
+	OfferedOptions = {} 
+
 	for _, p in pairs(Players:GetPlayers()) do
 		PendingSelections[p] = true
 		local options = RewardHandler.RollOptions(p, 3)
 		OfferedOptions[p] = options 
-		LevelUpEvent:FireClient(p, GlobalLevel, options)
+
+		-- PASS TIMEOUT HERE
+		LevelUpEvent:FireClient(p, GlobalLevel, options, SELECTION_TIMEOUT)
 	end
 
 	FireExpUpdate()
 
-	-- Timeout Failsafe
+	-- SERVER TIMEOUT FAILSAFE
+	-- This runs if the client fails to respond (disconnect/lag)
 	local currentLevelSnapshot = GlobalLevel
-	task.delay(SELECTION_TIMEOUT, function()
+	task.delay(SELECTION_TIMEOUT + 1, function() -- +1s buffer to let client finish first
 		if IsLevelingUp and GlobalLevel == currentLevelSnapshot then
-			print("Selection timeout. Auto-resuming.")
-			PendingSelections = {} 
+			print("Selection timeout (Server Failsafe). Auto-picking.")
+
+			for player, _ in pairs(PendingSelections) do
+				if player then
+					ApplyReward(player, 1)
+				end
+			end
 			ProcessNextStep()
 		end
 	end)
@@ -145,23 +163,15 @@ function LevelManager.GetCurrentLevel()
 	return GlobalLevel
 end
 
+-- === EVENT HANDLING ===
 RewardSelectedEvent.OnServerEvent:Connect(function(player, choiceIndex)
 	if IsLevelingUp and PendingSelections[player] then
-		local validOptions = OfferedOptions[player]
 
-		if validOptions and validOptions[choiceIndex] then
-			local choice = validOptions[choiceIndex]
+		ApplyReward(player, choiceIndex)
+		PendingSelections[player] = nil
 
-			-- Pass the PAYLOAD to AddItem
-			CharacterStats.AddItem(player, choice.Id, choice.Type, choice.Payload)
-
-			-- Cleanup
-			PendingSelections[player] = nil
-			OfferedOptions[player] = nil
-
-			if next(PendingSelections) == nil then
-				ProcessNextStep()
-			end
+		if next(PendingSelections) == nil then
+			ProcessNextStep()
 		end
 	end
 end)
