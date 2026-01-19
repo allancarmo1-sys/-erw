@@ -1,93 +1,75 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
-
--- Dependencies
 local Services = ReplicatedStorage:WaitForChild("MyServices"):WaitForChild("Services")
 local CharacterStats = require(Services:WaitForChild("CharacterStats"))
 
 local RewardHandler = {}
 
--- === CONFIGURATION ===
-local function getMaxWepSlots(player)
-	CharacterStats:GetStat(player, "MaxWeapons")
-end
-local function getMaxCharmSlots(player)
-	CharacterStats:GetStat(player, "MaxCharms")
-end
-
--- === RARITY WEIGHTS (Base Chance) ===
 local RARITY_DATA = {
 	{ Name = "Common",    Weight = 70,  Mult = 1.0, Color = Color3.fromRGB(200, 200, 200) },
-	{ Name = "Uncommon",  Weight = 25,  Mult = 1.2, Color = Color3.fromRGB(50, 200, 50)   },
-	{ Name = "Rare",      Weight = 10,  Mult = 1.5, Color = Color3.fromRGB(50, 50, 255)   },
-	{ Name = "Epic",      Weight = 4,   Mult = 2.0, Color = Color3.fromRGB(200, 50, 200)  },
-	{ Name = "Legendary", Weight = 1,   Mult = 3.0, Color = Color3.fromRGB(255, 150, 0)   }
+	{ Name = "Uncommon",  Weight = 25,  Mult = 1.5, Color = Color3.fromRGB(50, 200, 50)   },
+	{ Name = "Rare",      Weight = 10,  Mult = 2.0, Color = Color3.fromRGB(50, 50, 255)   },
+	{ Name = "Epic",      Weight = 4,   Mult = 3.5, Color = Color3.fromRGB(200, 50, 200)  },
+	{ Name = "Legendary", Weight = 1,   Mult = 5.0, Color = Color3.fromRGB(255, 150, 0)   }
 }
 
-local ITEM_DATABASE = {
-	-- WEAPONS
-	["Sniper"] = { Type = "Weapon", MaxLevel = 8, Description = "Pierces through enemies indefinitely." },
-	["Boomerang"] = { Type = "Weapon", MaxLevel = 8, Description = "Returns to the player after a short distance." },
-	["Ricochet"] = { Type = "Weapon", MaxLevel = 8, Description = "Bounces between nearby enemies." },
-	["WaspGun"] = { Type = "Weapon", MaxLevel = 8, Description = "Fires homing wasps." },
-
-	-- CHARMS (Passives)
-	["Spinach"] = { Type = "Charm", MaxLevel = 5, Stat = "Damage", Amount = 0.1, Description = "Increases damage by 10%." },
-	["EmptyHeart"] = { Type = "Charm", MaxLevel = 5, Stat = "MaxHealth", Amount = 0.2, Description = "Increases max health by 20%." },
-	["Clover"] = { Type = "Charm", MaxLevel = 5, Stat = "Luck", Amount = 10, Description = "Increases luck." },
-	["EnergyDrink"] = { Type = "Charm", MaxLevel = 5, Stat = "Speed", Amount = 2, Description = "Increases movement speed." },
-
-	-- CONSUMABLES (Fallback if everything is maxed)
-	["GoldBag"] = { Type = "Consumable", Description = "Instantly gain 50 Gold." },
-	["Chicken"] = { Type = "Consumable", Description = "Heal 30 HP." }
+-- Weapon Config: What stats exist and how much they upgrade by default
+local WEAPON_CONFIG = {
+	["Sniper"] = { 
+		Type = "Weapon",
+		Stats = { "Damage", "Cooldown", "ProjectileSpeed" }, 
+		BaseIncrements = { Damage = 2, Cooldown = 2, ProjectileSpeed = 2 } 
+	},
+	["Boomerang"] = { 
+		Type = "Weapon",
+		Stats = { "Damage", "Range" },
+		BaseIncrements = { Damage = 2, Range = 2 } 
+	},
+	["Bouncy"] = { 
+		Type = "Weapon",
+		Stats = { "Damage", "PierceCount" },
+		BaseIncrements = { Damage = 2, Bounces = 2 } 
+	}
 }
 
--- === HELPER: GET PLAYER INVENTORY ===
--- You likely need to adjust this to match how you actually store items.
--- For now, I assume a folder structure or a table in the player attributes.
+local CHARM_CONFIG = {
+	["Spinach"] = { Type = "Charm", Stat = "Damage", Amount = 0.1, Desc = "Damage" },
+	["Clover"]  = { Type = "Charm", Stat = "Luck", Amount = 10, Desc = "Luck" }
+}
+
+-- === HELPERS ===
+
 local function GetPlayerInventory(player)
-	-- Mock Inventory Structure: { ["Sniper"] = 1, ["Spinach"] = 3 }
-	local inv = {}
-	local weaponCount = 0
-	local charmCount = 0
+	local stats = CharacterStats.GetStats(player)
+	local ownedWeapons = {}
+	local ownedCharms = {}
+	local wCount, cCount = 0, 0
 
-	-- Example: checking a Folder in the player
-	local invFolder = player:FindFirstChild("Inventory")
-	if invFolder then
-		for _, item in pairs(invFolder:GetChildren()) do
-			local level = item:GetAttribute("Level") or 1
-			inv[item.Name] = level
-
-			-- Check type via DB to count slots
-			local dbData = ITEM_DATABASE[item.Name]
-			if dbData then
-				if dbData.Type == "Weapon" then weaponCount += 1 end
-				if dbData.Type == "Charm" then charmCount += 1 end
-			end
+	if stats and stats.Inventory then
+		for id, _ in pairs(stats.Inventory.Weapons) do
+			ownedWeapons[id] = true
+			wCount = wCount + 1
+		end
+		for id, _ in pairs(stats.Inventory.Charms) do
+			ownedCharms[id] = true
+			cCount = cCount + 1
 		end
 	end
-
-	return inv, weaponCount, charmCount
+	return ownedWeapons, ownedCharms, wCount, cCount
 end
 
--- === HELPER: CALCULATE RARITY ===
+-- fix this later seems too op
 local function RollRarity(playerLuck)
 	local totalWeight = 0
 	local pool = {}
-
-	-- Luck affects the weight of higher rarities
-	-- Formula: BaseWeight * (1 + Luck/100)
-	local luckFactor = math.max(0, playerLuck or 0) / 50 
+	local luckFactor = math.max(0, playerLuck) / 50 
 
 	for _, rarity in ipairs(RARITY_DATA) do
-		-- Common gets LESS frequent with luck, others get MORE frequent
 		local weight = rarity.Weight
 		if rarity.Name == "Common" then
 			weight = math.max(1, weight - (luckFactor * 10))
 		else
 			weight = weight + (weight * luckFactor)
 		end
-
 		table.insert(pool, { Data = rarity, Weight = weight })
 		totalWeight += weight
 	end
@@ -98,101 +80,118 @@ local function RollRarity(playerLuck)
 		c += entry.Weight
 		if r <= c then return entry.Data end
 	end
-	return RARITY_DATA[1] -- Fallback to Common
+	return RARITY_DATA[1]
 end
 
--- === MAIN: GENERATE OPTIONS ===
+-- === GENERATOR ===
+
 function RewardHandler.RollOptions(player, optionCount)
+	
 	optionCount = optionCount or 3
-	local currentInv, wCount, cCount = GetPlayerInventory(player)
-	local playerLuck = CharacterStats:GetStat(player, "Luck") or 0
+	local ownedWep, ownedCharm, wCount, cCount = GetPlayerInventory(player)
+	local playerLuck = CharacterStats:GetStat(player, "Luck")
+	local maxWep = CharacterStats:GetStat(player, "MaxWeapons")
+	local maxCharm = CharacterStats:GetStat(player, "MaxCharms")
 
 	local possiblePool = {}
 
-	-- 1. BUILD VALID POOL
-	for id, data in pairs(ITEM_DATABASE) do
-		local currentLevel = currentInv[id] or 0
-		local isOwned = currentLevel > 0
-
-		-- Logic for WEAPONS
-		if data.Type == "Weapon" then
-			if isOwned then
-				-- Upgrade path
-				if currentLevel < data.MaxLevel then
-					table.insert(possiblePool, { Id = id, IsNew = false, Level = currentLevel + 1 })
-				end
-			else
-				-- New Item path (Check Slots)
-				if wCount < MAX_WEAPON_SLOTS then
-					table.insert(possiblePool, { Id = id, IsNew = true, Level = 1 })
-				end
-			end
-
-			-- Logic for CHARMS
-		elseif data.Type == "Charm" then
-			if isOwned then
-				if currentLevel < data.MaxLevel then
-					table.insert(possiblePool, { Id = id, IsNew = false, Level = currentLevel + 1 })
-				end
-			else
-				if cCount < MAX_CHARM_SLOTS then
-					table.insert(possiblePool, { Id = id, IsNew = true, Level = 1 })
-				end
-			end
+	-- Weapons
+	for id, data in pairs(WEAPON_CONFIG) do
+		if ownedWep[id] then
+			table.insert(possiblePool, { Id = id, Type = "Weapon", IsNew = false, Config = data })
+		elseif wCount < maxWep then
+			table.insert(possiblePool, { Id = id, Type = "Weapon", IsNew = true, Config = data })
+		end
+	end
+	-- Charms
+	for id, data in pairs(CHARM_CONFIG) do
+		if ownedCharm[id] then 
+			table.insert(possiblePool, { Id = id, Type = "Charm", IsNew = false })
+		elseif cCount < maxCharm then
+			table.insert(possiblePool, { Id = id, Type = "Charm", IsNew = true })
 		end
 	end
 
-	--if #possiblePool < optionCount then
-	--	table.insert(possiblePool, { Id = "GoldBag", IsNew = false, Level = 0 })
-	--	table.insert(possiblePool, { Id = "Chicken", IsNew = false, Level = 0 })
+	--if #possiblePool == 0 then
+	--	-- Fallback: Consumables (Gold/Health)
+	--	table.insert(possiblePool, { Id = "GoldBag", Type = "Consumable", IsNew = false })
 	--end
 
-	local selectedOptions = {}
-	local usedIndices = {}
+	-- SELECT & ROLL STATS
+	local options = {}
 
 	for i = 1, optionCount do
-		-- Pick a random item from pool
-		if #possiblePool == 0 then break end 
-
-		local index
-		repeat 
-			index = math.random(1, #possiblePool)
-		until not usedIndices[index] or #possiblePool <= optionCount -- Safety break
-
-		usedIndices[index] = true
-		local choice = possiblePool[index]
-		local dbData = ITEM_DATABASE[choice.Id]
-
+		if #possiblePool == 0 then break end
+		local idx = math.random(1, #possiblePool)
+		local choice = possiblePool[idx]
+		table.remove(possiblePool, idx)
+		
 		local rarity = RollRarity(playerLuck)
-
 		local optionData = {
 			Id = choice.Id,
-			Name = choice.Id, 
-			Type = dbData.Type,
+			Name = choice.Id,
+			Type = choice.Type,
 			IsNew = choice.IsNew,
-			NextLevel = choice.Level,
 			Rarity = rarity.Name,
 			RarityColor = rarity.Color,
-			Description = dbData.Description
+			Description = "",
+			Payload = {}
 		}
 
-		-- Adjust Description based on Rarity Multiplier
-		if dbData.Amount then
-			local finalVal = dbData.Amount * rarity.Mult
-			-- Round to 1 decimal
-			finalVal = math.floor(finalVal * 10 + 0.5) / 10
+		-- DYNAMIC STAT LOGIC
+		if choice.Type == "Weapon" then
+			if choice.IsNew then
+				optionData.Description = "New Weapon! Base Stats."
+				optionData.Payload = { Damage = 1, Cooldown = 1, Range = 1, ProjectileSpeed = 1 } 
+			else
+				-- UPGRADE: Pick 1-2 Random Stats
+				local statsList = choice.Config.Stats
+				local numUpgrades = math.random(1, 2)
+				local descParts = {}
 
-			-- Append stat boost info
-			if dbData.Stat then
-				optionData.StatBoost = { Stat = dbData.Stat, Value = finalVal }
-				optionData.Description = optionData.Description .. " (+" .. finalVal .. " " .. dbData.Stat .. ")"
+				-- Shuffle to pick random stats
+				local shuffled = {unpack(statsList)}
+				for k = #shuffled, 2, -1 do 
+					local j = math.random(k)
+					shuffled[k], shuffled[j] = shuffled[j], shuffled[k]
+				end
+
+				for s = 1, math.min(numUpgrades, #shuffled) do
+					local statName = shuffled[s]
+					local baseInc = choice.Config.BaseIncrements[statName] or 0.1
+
+					-- Scale by Rarity
+					local finalInc = baseInc * rarity.Mult
+
+					-- Rounding
+					if math.abs(finalInc) < 1 then
+						finalInc = math.floor(finalInc * 100) / 100
+					else
+						finalInc = math.floor(finalInc)
+					end
+
+					optionData.Payload[statName] = finalInc
+
+					-- Format Text
+					local sign = (finalInc > 0) and "+" or ""
+					table.insert(descParts, string.format("%s%s %s", sign, finalInc, statName))
+				end
+
+				optionData.Description = table.concat(descParts, ", ")
 			end
+
+		elseif choice.Type == "Charm" then
+			local cData = CHARM_CONFIG[choice.Id]
+			optionData.Description = "Increases " .. cData.Desc
+			optionData.Payload = {} -- Logic handled inside CharacterStats
+		elseif choice.Type == "Consumable" then
+			optionData.Description = "Instant Reward"
 		end
 
-		table.insert(selectedOptions, optionData)
+		table.insert(options, optionData)
 	end
 
-	return selectedOptions
+	return options
 end
 
 return RewardHandler
