@@ -1,0 +1,67 @@
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local Services = ReplicatedStorage:WaitForChild("MyServices"):WaitForChild("Services")
+local CharacterStats = require(Services:WaitForChild("CharacterStats"))
+local ProjectileManager = require(Services:WaitForChild("ProjectileManager"))
+local CombatUtils = require(Services:WaitForChild("CombatUtils"))
+
+local VisualEvent = ReplicatedStorage:WaitForChild("VisualProjectileEvent")
+
+local character = script.Parent
+local player = Players:GetPlayerFromCharacter(character)
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local weapon = script
+local characterStats = {}
+local WEAPON_STATS = {}
+
+for index, value in pairs(weapon:GetAttributes()) do
+	WEAPON_STATS[index] = value
+end
+
+local lastFire = 0
+
+RunService.Heartbeat:Connect(function()
+	if not humanoid or humanoid.Health <= 0 or character:GetAttribute("IsPaused") then return end
+
+	characterStats = CharacterStats:GetStats(player)
+
+	if tick() - lastFire < (WEAPON_STATS.Cooldown / characterStats.Cooldown) then return end
+
+	local targetHum = CombatUtils:GetNearestEnemy(character, WEAPON_STATS.Range)
+
+	local mainTarget = CombatUtils:GetNearestEnemy(character, WEAPON_STATS.Range)
+
+	if mainTarget then
+		lastFire = tick()
+
+		task.spawn(function()
+			
+			for i = 1, (WEAPON_STATS.ProjectileAmount + characterStats.Amount) do
+				local myRoot = character.PrimaryPart
+				if not myRoot then break end
+
+				local currentTarget = mainTarget
+
+				if not currentTarget or currentTarget.Health <= 0 or not currentTarget.Parent then
+					currentTarget = CombatUtils:GetNearestEnemy(character, WEAPON_STATS.Range)
+				end
+
+				if currentTarget then
+					ProjectileManager.Fire(player, myRoot.Position, currentTarget, WEAPON_STATS)
+				else
+					local forwardDir = myRoot.CFrame.LookVector
+					ProjectileManager.Fire(player, myRoot.Position, forwardDir, WEAPON_STATS)
+				end
+
+				if i < (WEAPON_STATS.ProjectileAmount + characterStats.Amount) then
+					task.wait(WEAPON_STATS.BurstDelay)
+				end
+			end
+		end)
+	end
+end)
+
