@@ -1,12 +1,16 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
+local Services = ReplicatedStorage:WaitForChild("MyServices"):WaitForChild("Services")
 
 -- Dependencies
 local GameSession = require(ServerScriptService:WaitForChild("GameSession"))
-local PauseEvent = game:GetService("ReplicatedStorage"):WaitForChild("PauseEvent")
+local PauseEvent = ReplicatedStorage:WaitForChild("PauseEvent")
+local RewardHandler = require(ServerScriptService.RewardHandler)
+local CharacterStats = require(Services:WaitForChild("CharacterStats"))
 
 local LevelManager = {}
+local OfferedOptions = {}
 
 -- === CONFIGURATION ===
 local BASE_EXP_REQ = 100
@@ -56,14 +60,22 @@ local function ProcessNextStep()
 	-- 1. Check if we have enough EXP for ANOTHER level
 	if GlobalExp >= CurrentThreshold then
 		print("Multiple levels detected! Triggering next level immediately...")
-		task.wait(.5)
+		task.wait(0.5) -- Slight buffer for UX
 		LevelManager.TriggerLevelUp()
 	else
 		-- 2. No more levels pending? Resume the game.
 		print("Leveling complete. Resuming game.")
 		IsLevelingUp = false
 		PendingSelections = {}
-		GameSession.SetPause(false)
+
+		-- Unpause Logic
+		if GameSession.SetPause then
+			GameSession.SetPause(false)
+		else
+			-- Fallback if GameSession function is missing/renamed
+			PauseEvent:Fire(false)
+			workspace:SetAttribute("GamePaused", false)
+		end
 	end
 end
 
@@ -76,30 +88,13 @@ function LevelManager.Init()
 	IsLevelingUp = false
 	PendingSelections = {}
 	FireExpUpdate()
-
-	if not RewardSelectedEvent.OnServerEvent:Connect(function() end).Connected then
-		RewardSelectedEvent.OnServerEvent:Connect(function(player)
-			if PendingSelections[player] then
-				PendingSelections[player] = nil
-				print(player.Name .. " selected a reward.")
-
-				-- Check if EVERYONE has chosen
-				if next(PendingSelections) == nil then
-					-- Everyone is done. Check if we need to level up again or resume.
-					ProcessNextStep()
-				end
-			end
-		end)
-	end
+	print("LevelManager Initialized.")
 end
 
 function LevelManager.AddExp(amount)
-	-- FIX: ALWAYS add EXP, never return early.
 	GlobalExp = GlobalExp + amount
 
-	-- Only trigger the sequence if we aren't ALREADY doing it.
-	-- If IsLevelingUp is true, we just accumulate the EXP silently.
-	-- ProcessNextStep() will handle this overflow after the current selection is done.
+	-- Only trigger if not currently leveling up
 	if not IsLevelingUp and GlobalExp >= CurrentThreshold then
 		LevelManager.TriggerLevelUp()
 	else
@@ -108,37 +103,38 @@ function LevelManager.AddExp(amount)
 end
 
 function LevelManager.TriggerLevelUp()
+	if IsLevelingUp then return end -- Prevent double triggers
 	IsLevelingUp = true
-
-	-- 1. Consume the EXP for THIS level only
+	
 	GlobalExp = GlobalExp - CurrentThreshold
 
-	-- 2. Scale Up
 	GlobalLevel = GlobalLevel + 1
 	CurrentThreshold = CalculateThreshold()
 
-	print("LEVEL UP! New Level: " .. GlobalLevel .. " | New Req: " .. CurrentThreshold .. " | Floating Exp: " .. GlobalExp)
+	print("LEVEL UP! New Level: " .. GlobalLevel .. " | Req: " .. CurrentThreshold)
 
-	-- 3. Pause Game
-	PauseEvent:Fire(true)
+	if GameSession.SetPause then
+		GameSession.SetPause(true)
+	else
+		PauseEvent:Fire(true)
+		workspace:SetAttribute("GamePaused", true)
+	end
 
-	-- 4. Setup Players
 	PendingSelections = {}
 	for _, p in pairs(Players:GetPlayers()) do
 		PendingSelections[p] = true
+		local options = RewardHandler.RollOptions(p, 3)
+		OfferedOptions[p] = options 
+		LevelUpEvent:FireClient(p, GlobalLevel, options)
 	end
 
-	-- 5. Fire Events
-	LevelUpEvent:FireAllClients(GlobalLevel)
-	FireExpUpdate() -- Update visual bar (it will likely drop to low % or jump up if huge overflow)
+	FireExpUpdate()
 
-	-- 6. Timeout Failsafe
-	-- If players take too long, force the next step
+	-- Timeout Failsafe
 	local currentLevelSnapshot = GlobalLevel
 	task.delay(SELECTION_TIMEOUT, function()
 		if IsLevelingUp and GlobalLevel == currentLevelSnapshot then
-			print("Selection timeout. Auto-selecting.")
-			-- Force clear pending selections
+			print("Selection timeout. Auto-resuming.")
 			PendingSelections = {} 
 			ProcessNextStep()
 		end
@@ -148,5 +144,26 @@ end
 function LevelManager.GetCurrentLevel()
 	return GlobalLevel
 end
+
+RewardSelectedEvent.OnServerEvent:Connect(function(player, choiceIndex)
+	if IsLevelingUp and PendingSelections[player] then
+		local validOptions = OfferedOptions[player]
+
+		if validOptions and validOptions[choiceIndex] then
+			local choice = validOptions[choiceIndex]
+
+			-- Pass the PAYLOAD to AddItem
+			CharacterStats.AddItem(player, choice.Id, choice.Type, choice.Payload)
+
+			-- Cleanup
+			PendingSelections[player] = nil
+			OfferedOptions[player] = nil
+
+			if next(PendingSelections) == nil then
+				ProcessNextStep()
+			end
+		end
+	end
+end)
 
 return LevelManager
