@@ -1,5 +1,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Events = ReplicatedStorage:WaitForChild("GameEvents")
+local EasyVisuals = require(ReplicatedStorage:WaitForChild("Animations"):WaitForChild("EasyVisuals"))
 
 local LevelUpFrame = script.Parent:WaitForChild("LevelUpBar")
 local expBar = LevelUpFrame:WaitForChild("Bar")
@@ -9,8 +10,38 @@ local option1Button = rewardFrame:WaitForChild("Option1Frame"):WaitForChild("Opt
 local option2Button = rewardFrame:WaitForChild("Option2Frame"):WaitForChild("OptionButton")
 local option3Button = rewardFrame:WaitForChild("Option3Frame"):WaitForChild("OptionButton")
 
+local opt1Eff
+local opt2Eff
+local opt3Eff
+
 local RewardSelectedEvent = Events:FindFirstChild("RewardSelected") or Instance.new("RemoteEvent", Events)
 RewardSelectedEvent.Name = "RewardSelected"
+
+--{
+--	[1] =  ▼  {
+--		["Description"] = "+0.15 Damage, +1 Bounces",
+--		["Id"] = "Bouncy",
+--		["IsNew"] = false,
+--		["Name"] = "Bouncy",
+--		["Payload"] =  ▶ {...},
+--		["Rarity"] = "Uncommon",
+--		["RarityColor"] = 0.196078, 0.784314, 0.196078,
+--		["Type"] = "Weapon"
+--	},
+
+local function updateRewardOption(optButton, option)
+	if option.IsNew then
+		optButton.RarityLabel.Text = "New!"
+		optButton.RarityLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		optButton.RarityLabel.Text = option.Rarity
+		optButton.RarityLabel.TextColor3 = option.RarityColor
+	end
+	optButton.BackgroundColor3 = option.RarityColor
+	optButton.Description.ItemName.Text = option.Name
+	optButton.Description.ItemStats.Text = option.Description
+	
+end
 
 Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
 	local percent = math.clamp(current / max, 0, 1)
@@ -18,14 +49,32 @@ Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
 	print("EXP: " .. current .. "/" .. max .. " (Lvl " .. level .. ")")
 end)
 
-Events.LevelUp.OnClientEvent:Connect(function(newLevel)
-	print("Level Up! Choose a reward!")
-	rewardFrame.Visible = true
+Events.LevelUp.OnClientEvent:Connect(function(newLevel, rewardOptions)
+	print("Level Up! Choices:")
+	print(rewardOptions)
+    for i, opt in ipairs(rewardOptions) do
+		print(i .. ": " .. opt.Name .. " [" .. opt.Rarity .. "]")
+		if i == 1 then
+			updateRewardOption(option1Button, opt)
+			opt1Eff = EasyVisuals.new(option1Button, "WaveStroke", .5, 6, false, opt.RarityColor)
+		elseif i == 2 then
+			updateRewardOption(option2Button, opt)
+			opt2Eff = EasyVisuals.new(option2Button, "WaveStroke", .5, 6, false, opt.RarityColor)
+		elseif i == 3 then
+			updateRewardOption(option3Button, opt)
+			opt3Eff = EasyVisuals.new(option3Button, "WaveStroke", .5, 6, false, opt.RarityColor)
+		end
+		
+    end
+    rewardFrame.Visible = true
 end)
 
 function SelectReward(rewardId)
 	rewardFrame.Visible = false
 	RewardSelectedEvent:FireServer(rewardId)
+	opt1Eff:Destroy()
+	opt2Eff:Destroy()
+	opt3Eff:Destroy()
 	print("reward selected event fired")
 end
 
