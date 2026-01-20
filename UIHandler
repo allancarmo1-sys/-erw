@@ -7,7 +7,6 @@ local LevelUpFrame = script.Parent:WaitForChild("LevelUpBar")
 local expBar = LevelUpFrame:WaitForChild("Bar")
 
 local rewardFrame = script.Parent:WaitForChild("ChooseReward")
--- Ensure you created this TextLabel in your GUI!
 local timerLabel = rewardFrame:WaitForChild("RewardTimer"):WaitForChild("Timer")
 
 local option1Button = rewardFrame:WaitForChild("Option1Frame"):WaitForChild("OptionButton")
@@ -39,11 +38,12 @@ local function updateRewardOption(optButton, option)
 	if option.IsNew then
 		optButton.RarityLabel.Text = "New!"
 		optButton.RarityLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		optButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	else
 		optButton.RarityLabel.Text = option.Rarity
 		optButton.RarityLabel.TextColor3 = option.RarityColor
+		optButton.BackgroundColor3 = option.RarityColor
 	end
-	optButton.BackgroundColor3 = option.RarityColor
 	optButton.Description.ItemName.Text = option.Name
 	optButton.Description.ItemStats.Text = option.Description
 end
@@ -53,15 +53,14 @@ Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
 	expBar.Size = UDim2.new(percent, 0, 1, 0)
 end)
 
--- Receive Duration from Server
 Events.LevelUp.OnClientEvent:Connect(function(newLevel, rewardOptions, duration)
-	CleanupTimer() -- Stop any previous timer
+	CleanupTimer() 
 	ClearEffects()
 
 	rewardFrame.Visible = true
 	local eff = EasyVisuals.new(rewardFrame.TopTextFrame.TextLabel, "Rainbow", .5)
 	table.insert(currentEffects, eff)
-	-- Populate UI
+	
 	for i, opt in ipairs(rewardOptions) do
 		local targetBtn
 		if i == 1 then targetBtn = option1Button
@@ -82,13 +81,12 @@ Events.LevelUp.OnClientEvent:Connect(function(newLevel, rewardOptions, duration)
 	activeTimerConnection = RunService.Heartbeat:Connect(function()
 		local remaining = math.max(0, endTime - tick())
 
-		-- Format: "14.5s"
-		timerLabel.Text = string.format("%.1fs", remaining)
+		-- Format: "14.5"
+		timerLabel.Text = string.format("%.1f", remaining)
 
 		if remaining <= 0 then
-			-- TIME IS UP!
 			CleanupTimer()
-			-- Auto-Select Option 1 to match server failsafe AND close UI
+			-- auto-Select option 1
 			SelectReward(1)
 		end
 	end)
