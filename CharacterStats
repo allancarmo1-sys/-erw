@@ -43,7 +43,7 @@ local DEFAULT_STATS = {
 	Speed = 5, --M
 
 	ExtraJumps = 0, --F
-	JumpPower = 3, --M
+	JumpPower = 1, --M
 	Luck = 1, --M
 	Difficulty = 1, --F
 
@@ -91,8 +91,6 @@ local function deepCopy(original)
 	return copy
 end
 
--- === DATA MANAGEMENT ===
-
 function CharacterStats.InitPlayer(player)
 	local key = "Player_" .. player.UserId
 	PlayerDataStore:RemoveAsync(key)
@@ -105,20 +103,16 @@ function CharacterStats.InitPlayer(player)
 		print("Loaded data for " .. player.Name)
 	else
 		sessionStats[player] = deepCopy(DEFAULT_STATS)
-		-- Optional: Give a starter weapon for new players
 		CharacterStats.AddItem(player, "Bouncy", "Weapon") 
 		print("New profile for " .. player.Name)
 	end
 
-	-- PERSISTENCE: Equip weapons every time the character spawns
 	player.CharacterAdded:Connect(function(char)
-		-- Wait a brief moment to ensure Roblox is done building the character
 		task.wait(0.2) 
 		CharacterStats:RefreshCharacter(player)
 		CharacterStats.EquipWeapons(player)
 	end)
 
-	-- If they are already spawned (e.g. testing in Studio), equip now
 	if player.Character then
 		CharacterStats:RefreshCharacter(player)
 		CharacterStats.EquipWeapons(player)
@@ -129,16 +123,9 @@ function CharacterStats.SavePlayer(player)
 	local data = sessionStats[player]
 	if not data then return end
 	local key = "Player_" .. player.UserId
-
-	local saveTable = {
-		Gold = data.Gold,
-		Inventory = data.Inventory
-		-- TotalKills and damage
-	}
+	local saveTable = { Gold = data.Gold, Inventory = data.Inventory }
 	pcall(function() PlayerDataStore:SetAsync(key, saveTable) end)
 end
-
--- === STAT API ===
 
 function CharacterStats.GetStats(player)
 	return sessionStats[player] or deepCopy(DEFAULT_STATS)
@@ -146,9 +133,7 @@ end
 
 function CharacterStats:GetStat(player, statName)
 	local data = sessionStats[player]
-	if data and data[statName] ~= nil then
-		return data[statName]
-	end
+	if data and data[statName] ~= nil then return data[statName] end
 	return DEFAULT_STATS[statName]
 end
 
@@ -165,24 +150,12 @@ end
 local function SyncAttributes(weaponInstance, statTable)
 	local weaponName = weaponInstance.Name
 	local sourceTemplate = WEAPON_SOURCE:FindFirstChild(weaponName)
-
-	if not sourceTemplate then 
-		warn("Cannot Sync Attributes: Source not found for " .. weaponName)
-		return 
-	end
+	if not sourceTemplate then return end
 
 	for statName, invValue in pairs(statTable) do
 		local baseAttr = sourceTemplate:GetAttribute(statName)
-
 		if baseAttr then
-			local finalValue
-
-			if ADDITIVE_STATS[statName] then
-				finalValue = baseAttr + invValue
-			else
-				finalValue = baseAttr * invValue
-			end
-
+			local finalValue = ADDITIVE_STATS[statName] and (baseAttr + invValue) or (baseAttr * invValue)
 			weaponInstance:SetAttribute(statName, finalValue)
 		end
 	end
@@ -198,7 +171,6 @@ function CharacterStats.EquipWeapons(player)
 			if source then
 				local clone = source:Clone()
 				clone.Name = weaponName
-				-- Apply attributes immediately upon cloning
 				SyncAttributes(clone, weaponData.Stats) 
 				clone.Parent = player.Character
 				clone.Enabled = true
@@ -213,27 +185,15 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 
 	if itemType == "Weapon" then
 		local inventoryEntry = data.Inventory.Weapons[itemId]
-
-		-- NEW WEAPON
 		if not inventoryEntry then
 			local initialStats = {}
-
-			-- Initialize stats based on the passed data
 			if upgradeData then
-				for stat, val in pairs(upgradeData) do
-					initialStats[stat] = val
-				end
+				for stat, val in pairs(upgradeData) do initialStats[stat] = val end
 			else
-				-- Fallbacks if no data provided
 				initialStats = { Damage = 1, Cooldown = 1, Range = 1 }
 			end
 
-			data.Inventory.Weapons[itemId] = {
-				Level = 1,
-				Stats = initialStats
-			}
-			print("Unlocked New Weapon: " .. itemId)
-
+			data.Inventory.Weapons[itemId] = { Level = 1, Stats = initialStats }
 			if player.Character then
 				local source = WEAPON_SOURCE:FindFirstChild(itemId)
 				if source then
@@ -244,56 +204,38 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 					clone.Enabled = true
 				end
 			end
-
 		else
 			inventoryEntry.Level = inventoryEntry.Level + 1
-
 			if upgradeData then
 				for stat, amount in pairs(upgradeData) do
-					local defaultTracker = 1
-					if ADDITIVE_STATS[stat] then
-						defaultTracker = 0
-					end
-
+					local defaultTracker = ADDITIVE_STATS[stat] and 0 or 1
 					local currentTracker = inventoryEntry.Stats[stat] or defaultTracker
-
-					-- Example Multiplier: 1.0 + 0.1 = 1.1 (110%)
-					-- Example Additive: 0 + 1 = 1 (+1 Extra)
 					inventoryEntry.Stats[stat] = math.floor((currentTracker + amount) * 100) / 100
 				end
 			end
-
-			print("Upgraded " .. itemId .. " to Lvl " .. inventoryEntry.Level)
-
 			if player.Character then
 				local liveWeapon = player.Character:FindFirstChild(itemId)
-				if liveWeapon then
-					SyncAttributes(liveWeapon, inventoryEntry.Stats)
-				end
+				if liveWeapon then SyncAttributes(liveWeapon, inventoryEntry.Stats) end
 			end
 		end
 
 	elseif itemType == "Charm" then
 		local inventoryEntry = data.Inventory.Charms[itemId]
-		--data.Inventory.Charms[itemId] = (entry or 0) + 1
-		
+
+		-- upgradeData is now always { StatName = Value }
 		if not inventoryEntry then
 			local initialStat = {}
-
 			if upgradeData then
 				for stat, amount in pairs(upgradeData) do
-					print(upgradeData)
-					print(data[stat])
-					print(stat)
-					print(amount)
-					CharacterStats.SetStat(player, stat, (data[upgradeData[stat]] + amount))
-					initialStat[stat] += amount
+					local current = CharacterStats:GetStat(player, stat)
+					CharacterStats.SetStat(player, stat, current + amount)
+					initialStat[stat] = amount
 				end
 			end
 
 			data.Inventory.Charms[itemId] = {
 				Level = 1,
-				Stat = initialStat
+				Stats = initialStat 
 			}
 			print("Unlocked New Charm: " .. itemId)
 
@@ -302,8 +244,11 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 
 			if upgradeData then
 				for stat, amount in pairs(upgradeData) do
-					CharacterStats.SetStat(player, stat, (data[stat] + upgradeData[stat]))
-					initialStat[stat] += amount
+					local current = CharacterStats:GetStat(player, stat)
+					CharacterStats.SetStat(player, stat, current + amount)
+
+					local savedVal = inventoryEntry.Stats[stat] or 0
+					inventoryEntry.Stats[stat] = savedVal + amount
 				end
 			end
 			print("Upgraded " .. itemId .. " to Lvl " .. inventoryEntry.Level)
@@ -314,10 +259,8 @@ end
 function CharacterStats.GetItemLevel(player, itemId)
 	local data = sessionStats[player]
 	if not data then return 0 end
-	
 	local wep = data.Inventory.Weapons[itemId]
 	local charm = data.Inventory.Charms[itemId]
-	
 	return wep or charm or 0
 end
 
@@ -330,7 +273,6 @@ function CharacterStats:RefreshCharacter(player)
 		hum.MaxHealth = data.MaxHP
 		hum.JumpPower = data.JumpPower * 50
 		hum.WalkSpeed = data.Speed * 16
-		-- You can apply charm logic here (e.g., if Spinach > 0 then damage +10%)
 	end
 end
 
