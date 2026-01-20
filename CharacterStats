@@ -8,6 +8,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local sessionStats = {}
 local WEAPON_SOURCE = ReplicatedStorage:WaitForChild("Items"):WaitForChild("Weapons")
 
+local ADDITIVE_STATS = {
+	["PierceCount"] = true,
+	["Bounces"] = true,
+	["Amount"] = true,
+	["ExtraJumps"] = true,
+	["Duration"] = true,
+	["Knockback"] = true,
+}
+
 -- === DEFAULT DATA (New Profile) ===
 local DEFAULT_STATS = {
 	MaxHP = 100, --F
@@ -60,12 +69,16 @@ local DEFAULT_STATS = {
 	MaxWeapons = 2,
 	MaxCharms = 2,
 
-	-- INVENTORY (Saved)
+	UnlockedItems = {
+		Weapons = {"Bouncy", "Sniper", "Boomerang"},
+		Charms = {"Spinach", "Clover"}
+	},
+
 	-- format: { ["Sniper"] = 1, ["Spinach"] = 2 }
 	Inventory = {
 		Weapons = {},
 		Charms = {}
-	}
+	},
 
 }
 
@@ -143,19 +156,35 @@ function CharacterStats.SetStat(player, statName, value)
 	local data = sessionStats[player]
 	if data then
 		data[statName] = value
-		-- If it's a physical stat, update the character immediately
-		if statName == "MaxHP" or statName == "Speed" then
+		if statName == "MaxHP" or statName == "Speed" or statName == "JumpPower" then
 			CharacterStats:RefreshCharacter(player)
 		end
 	end
 end
 
 local function SyncAttributes(weaponInstance, statTable)
-	
-	for statName, value in pairs(statTable) do
-		local finalValue = (value * weaponInstance:GetAttribute(statName))
-		
-		weaponInstance:SetAttribute(statName, finalValue)
+	local weaponName = weaponInstance.Name
+	local sourceTemplate = WEAPON_SOURCE:FindFirstChild(weaponName)
+
+	if not sourceTemplate then 
+		warn("Cannot Sync Attributes: Source not found for " .. weaponName)
+		return 
+	end
+
+	for statName, invValue in pairs(statTable) do
+		local baseAttr = sourceTemplate:GetAttribute(statName)
+
+		if baseAttr then
+			local finalValue
+
+			if ADDITIVE_STATS[statName] then
+				finalValue = baseAttr + invValue
+			else
+				finalValue = baseAttr * invValue
+			end
+
+			weaponInstance:SetAttribute(statName, finalValue)
+		end
 	end
 end
 
@@ -164,18 +193,15 @@ function CharacterStats.EquipWeapons(player)
 	if not data or not player.Character then return end
 
 	for weaponName, weaponData in pairs(data.Inventory.Weapons) do
-		-- Only add if it doesn't exist yet
 		if not player.Character:FindFirstChild(weaponName) then
 			local source = WEAPON_SOURCE:FindFirstChild(weaponName)
 			if source then
 				local clone = source:Clone()
 				clone.Name = weaponName
+				-- Apply attributes immediately upon cloning
 				SyncAttributes(clone, weaponData.Stats) 
 				clone.Parent = player.Character
-				print("Equipped " .. weaponName .. " to " .. player.Name)
 				clone.Enabled = true
-			else
-				warn("Weapon script not found in ReplicatedStorage: " .. weaponName)
 			end
 		end
 	end
@@ -188,10 +214,19 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 	if itemType == "Weapon" then
 		local inventoryEntry = data.Inventory.Weapons[itemId]
 
-		-- CASE A: NEW WEAPON
+		-- NEW WEAPON
 		if not inventoryEntry then
-			-- If upgradeData is passed (from RewardHandler), use it as base, else defaults
-			local initialStats = upgradeData or { Damage = 1, Cooldown = 1, Range = 1 } 
+			local initialStats = {}
+
+			-- Initialize stats based on the passed data
+			if upgradeData then
+				for stat, val in pairs(upgradeData) do
+					initialStats[stat] = val
+				end
+			else
+				-- Fallbacks if no data provided
+				initialStats = { Damage = 1, Cooldown = 1, Range = 1 }
+			end
 
 			data.Inventory.Weapons[itemId] = {
 				Level = 1,
@@ -199,7 +234,6 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 			}
 			print("Unlocked New Weapon: " .. itemId)
 
-			-- Instantly give to Current Character
 			if player.Character then
 				local source = WEAPON_SOURCE:FindFirstChild(itemId)
 				if source then
@@ -211,22 +245,26 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 				end
 			end
 
-			-- CASE B: UPGRADE EXISTING
 		else
 			inventoryEntry.Level = inventoryEntry.Level + 1
 
-			-- Apply specific stat changes (upgradeData = { Damage = 0.2 })
 			if upgradeData then
 				for stat, amount in pairs(upgradeData) do
-					local oldVal = inventoryEntry.Stats[stat] or 0
-					-- Round to avoid floating point errors (optional)
-					inventoryEntry.Stats[stat] = math.floor((oldVal + amount) * 100) / 100
+					local defaultTracker = 1
+					if ADDITIVE_STATS[stat] then
+						defaultTracker = 0
+					end
+
+					local currentTracker = inventoryEntry.Stats[stat] or defaultTracker
+
+					-- Example Multiplier: 1.0 + 0.1 = 1.1 (110%)
+					-- Example Additive: 0 + 1 = 1 (+1 Extra)
+					inventoryEntry.Stats[stat] = math.floor((currentTracker + amount) * 100) / 100
 				end
 			end
 
 			print("Upgraded " .. itemId .. " to Lvl " .. inventoryEntry.Level)
 
-			-- Update the Active Weapon Script immediately
 			if player.Character then
 				local liveWeapon = player.Character:FindFirstChild(itemId)
 				if liveWeapon then
@@ -236,13 +274,40 @@ function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
 		end
 
 	elseif itemType == "Charm" then
-		local entry = data.Inventory.Charms[itemId]
-		if not entry then
-			data.Inventory.Charms[itemId] = 1
+		local inventoryEntry = data.Inventory.Charms[itemId]
+		--data.Inventory.Charms[itemId] = (entry or 0) + 1
+		
+		if not inventoryEntry then
+			local initialStat = {}
+
+			if upgradeData then
+				for stat, amount in pairs(upgradeData) do
+					print(upgradeData)
+					print(data[stat])
+					print(stat)
+					print(amount)
+					CharacterStats.SetStat(player, stat, (data[upgradeData[stat]] + amount))
+					initialStat[stat] += amount
+				end
+			end
+
+			data.Inventory.Charms[itemId] = {
+				Level = 1,
+				Stat = initialStat
+			}
+			print("Unlocked New Charm: " .. itemId)
+
 		else
-			data.Inventory.Charms[itemId] = entry + 1
+			inventoryEntry.Level = inventoryEntry.Level + 1
+
+			if upgradeData then
+				for stat, amount in pairs(upgradeData) do
+					CharacterStats.SetStat(player, stat, (data[stat] + upgradeData[stat]))
+					initialStat[stat] += amount
+				end
+			end
+			print("Upgraded " .. itemId .. " to Lvl " .. inventoryEntry.Level)
 		end
-		CharacterStats:RefreshCharacter(player)
 	end
 end
 
