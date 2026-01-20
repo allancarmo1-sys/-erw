@@ -8,8 +8,8 @@ local RARITY_DATA = {
 	{ Name = "Common",    Weight = 70,  Mult = 1.0, Color = Color3.fromRGB(200, 200, 200) },
 	{ Name = "Uncommon",  Weight = 25,  Mult = 1.5, Color = Color3.fromRGB(50, 200, 50)   },
 	{ Name = "Rare",      Weight = 10,  Mult = 2.0, Color = Color3.fromRGB(50, 50, 255)   },
-	{ Name = "Epic",      Weight = 4,   Mult = 3.5, Color = Color3.fromRGB(200, 50, 200)  },
-	{ Name = "Legendary", Weight = 1,   Mult = 5.0, Color = Color3.fromRGB(255, 150, 0)   }
+	{ Name = "Epic",      Weight = 4,   Mult = 2.5, Color = Color3.fromRGB(200, 50, 200)  },
+	{ Name = "Legendary", Weight = 1,   Mult = 3.0, Color = Color3.fromRGB(255, 150, 0)   }
 }
 
 -- Weapon Config: What stats exist and how much they upgrade by default
@@ -27,13 +27,21 @@ local WEAPON_CONFIG = {
 	["Bouncy"] = { 
 		Type = "Weapon",
 		Stats = { "Damage", "PierceCount" },
-		BaseIncrements = { Damage = 2, Bounces = 2 } 
+		BaseIncrements = { Damage = 2, PierceCount = 1 } 
 	}
 }
 
 local CHARM_CONFIG = {
-	["Spinach"] = { Type = "Charm", Stat = "Damage", Amount = 0.1, Desc = "Damage" },
-	["Clover"]  = { Type = "Charm", Stat = "Luck", Amount = 10, Desc = "Luck" }
+	["Spinach"] = { 
+		Type = "Charm", 
+		Stat = "Damage",
+		BaseIncrement = { Damage = 2},
+		Desc = "Damage" },
+	["Clover"]  = { 
+		Type = "Charm", 
+		Stat = "Luck",  
+		BaseIncrement = { Luck = 2},
+		Desc = "Luck" }
 }
 
 -- === HELPERS ===
@@ -106,9 +114,9 @@ function RewardHandler.RollOptions(player, optionCount)
 	-- Charms
 	for id, data in pairs(CHARM_CONFIG) do
 		if ownedCharm[id] then 
-			table.insert(possiblePool, { Id = id, Type = "Charm", IsNew = false })
+			table.insert(possiblePool, { Id = id, Type = "Charm", IsNew = false, Config = data })
 		elseif cCount < maxCharm then
-			table.insert(possiblePool, { Id = id, Type = "Charm", IsNew = true })
+			table.insert(possiblePool, { Id = id, Type = "Charm", IsNew = true, Config = data })
 		end
 	end
 
@@ -117,7 +125,6 @@ function RewardHandler.RollOptions(player, optionCount)
 	--	table.insert(possiblePool, { Id = "GoldBag", Type = "Consumable", IsNew = false })
 	--end
 
-	-- SELECT & ROLL STATS
 	local options = {}
 
 	for i = 1, optionCount do
@@ -138,18 +145,17 @@ function RewardHandler.RollOptions(player, optionCount)
 			Payload = {}
 		}
 
-		-- DYNAMIC STAT LOGIC
 		if choice.Type == "Weapon" then
 			if choice.IsNew then
 				optionData.Description = "New Weapon! Base Stats."
 				optionData.Payload = { Damage = 1, Cooldown = 1, Range = 1, ProjectileSpeed = 1 } 
 			else
-				-- UPGRADE: Pick 1-2 Random Stats
+				-- pick 1-2 random stats
 				local statsList = choice.Config.Stats
 				local numUpgrades = math.random(1, 2)
 				local descParts = {}
 
-				-- Shuffle to pick random stats
+				-- shuffle to pick
 				local shuffled = {unpack(statsList)}
 				for k = #shuffled, 2, -1 do 
 					local j = math.random(k)
@@ -158,7 +164,7 @@ function RewardHandler.RollOptions(player, optionCount)
 
 				for s = 1, math.min(numUpgrades, #shuffled) do
 					local statName = shuffled[s]
-					local baseInc = choice.Config.BaseIncrements[statName] or 0.1
+					local baseInc = choice.Config.BaseIncrements[statName]
 
 					-- Scale by Rarity
 					local finalInc = baseInc * rarity.Mult
@@ -172,7 +178,6 @@ function RewardHandler.RollOptions(player, optionCount)
 
 					optionData.Payload[statName] = finalInc
 
-					-- Format Text
 					local sign = (finalInc > 0) and "+" or ""
 					table.insert(descParts, string.format("%s%s %s", sign, finalInc, statName))
 				end
@@ -181,11 +186,28 @@ function RewardHandler.RollOptions(player, optionCount)
 			end
 
 		elseif choice.Type == "Charm" then
-			local cData = CHARM_CONFIG[choice.Id]
-			optionData.Description = "Increases " .. cData.Desc
-			optionData.Payload = {} -- Logic handled inside CharacterStats
-		elseif choice.Type == "Consumable" then
-			optionData.Description = "Instant Reward"
+			if choice.IsNew then
+				optionData.Description = "New Charm! Increases " .. choice.Config.Desc
+				optionData.Payload = {choice.Config.Stat} 
+			else
+				local baseInc = choice.Config.BaseIncrement
+
+				local finalInc = baseInc * rarity.Mult
+
+				if math.abs(finalInc) < 1 then
+					finalInc = math.floor(finalInc * 100) / 100
+				else
+					finalInc = math.floor(finalInc)
+				end
+
+				optionData.Payload = finalInc
+
+				local sign = (finalInc > 0) and "+" or ""
+				
+				optionData.Description = string.format("%s%s %s", sign, finalInc, choice.Config.Stat)
+			end
+				
+			
 		end
 
 		table.insert(options, optionData)
