@@ -1,255 +1,228 @@
-local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+local SpawnerModule = require(ServerScriptService.MobSpawner)
+local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
-
 local RS = game:GetService("ReplicatedStorage")
+
 local Services = RS:WaitForChild("MyServices"):WaitForChild("Services")
-local CharacterStats = require(Services:WaitForChild("CharacterStats"))
+local StateManager = require(Services:WaitForChild("StateManager"))
 
-local CombatUtils = require(Services:WaitForChild("CombatUtils"))
-local VisualEvent = RS:WaitForChild("VisualProjectileEvent")
+local PauseEvent = game.ReplicatedStorage:WaitForChild("PauseEvent")
 
-local ProjectileManager = {}
-local activeProjectiles = {}
+local GameSession = {}
+local GameEXP = 0
 
-local HITBOX_SIZE = 4 
+local Spawner = SpawnerModule.new()
 
-local function GetZombieFromPart(part)
-	if not part then return nil end
-
-	--if CollectionService:HasTag(part, "ZombieEntity") then return part end
-
-	local current = part
-	while current and current ~= workspace do
-		if CollectionService:HasTag(current, "ZombieEntity") then
-			return current
-		end
-		current = current.Parent
-	end
-	return nil
-
-	--local model = part:FindFirstAncestorOfClass("Model")
-	--if model and CollectionService:HasTag(model, "ZombieEntity") then return model end
-
-	--return nil
-end
-
-local function FindBounceTarget(currentPos, range, ignoreList)
-	local bestTarget = nil
-	local minDist = range
-	for _, enemy in ipairs(CollectionService:GetTagged("ZombieEntity")) do
-		if not ignoreList[enemy] then 
-			local root = enemy:FindFirstChild("HumanoidRootPart")
-			local hum = enemy:FindFirstChild("Humanoid")
-			if root and hum and hum.Health > 0 then
-				local dist = (root.Position - currentPos).Magnitude
-				if dist < minDist then
-					minDist = dist
-					bestTarget = enemy
-				end
-			end
-		end
-	end
-	return bestTarget
-end
-
-function ProjectileManager.Fire(ownerPlayer, startPos, targetOrDir, stats)
-	local isHoming = typeof(targetOrDir) == "Instance"
-	local characterStats = CharacterStats:GetStats(ownerPlayer)
-
-	local initialDir = Vector3.new(0,0,1)
-	if not isHoming then
-		initialDir = targetOrDir.Unit
-	elseif targetOrDir and targetOrDir.Parent and targetOrDir.Parent:FindFirstChild("HumanoidRootPart") then
-		initialDir = (targetOrDir.Parent.HumanoidRootPart.Position - startPos).Unit
-	end
-
-	local maxDist = nil
-
-	if stats.IsBoomerang then
-		maxDist = (stats.Range - 60)
-	elseif isHoming and targetOrDir then
-		maxDist = 500 
-	elseif not isHoming then
-		maxDist = stats.Range 
-	end
-
-	local projectile = {
-		Owner = ownerPlayer,
-		Position = startPos,
-		StartPos = startPos,
-		Speed = stats.ProjectileSpeed,
-		Color = stats.ProjectileColor,
-
-		DamageStats = stats,
-		HitsRemaining = (stats.PierceCount + characterStats.Bounces),
-		IsPiercing = stats.IsPiercing,
-		BounceRange = stats.BounceRange,
-		
-		IsSniper = stats.IsSniper,
-		IsRicochet = stats.IsRicochet,
-		IsBoomerang = stats.IsBoomerang,
-		ProjMaxDist = (stats.Range - 60),
-		IsReturning = false,
-
-		IsHoming = isHoming,
-		Target = isHoming and targetOrDir or nil,
-		Direction = not isHoming and targetOrDir.Unit or nil, -- change this last
-
-		HitHistory = {},
-		Lifetime = 5,
-		BirthTime = tick()
+-- Add mobs here dingus
+local MOB_TYPES = {
+	Creep = {
+		ModelName = "Creep",
+		Health = 100, Damage = 10, Speed = 10, Lifetime = 45,
+		BaseEXP = 100, Elite = true, Weight = 100
+	},
+	Wasp = {
+		ModelName = "Wasp",
+		Health = 50, Damage = 5, Speed = 14, Lifetime = 45,
+		BaseEXP = 15, Elite = false, Weight = 50
+	},
+	Tank = {
+		ModelName = "Tank",
+		Health = 300, Damage = 25, Speed = 8, Lifetime = 45,
+		BaseEXP = 50, Elite = false, Weight = 20
+	},
+	EliteCreep = {
+		ModelName = "EliteCreep",
+		Health = 500, Damage = 30, Speed = 4, Lifetime = 120,
+		BaseEXP = 100, Elite = false, Weight = 10
+	},
+	BossCreep = {
+		ModelName = "BossCreep",
+		Health = 1000, Damage = 50, Speed = 4, Lifetime = 99999,
+		BaseEXP = 1000, Elite = true, Weight = 5
 	}
+}
 
-	table.insert(activeProjectiles, projectile)
+-- Add maps here broski
+local MAP_DATA = {
+	["Forest"] = {
+		Waves = {
+			{
+				Type = "Wave",
+				Name = "*yawns cutely* wave 1",
+				Duration = 30, BaseFrequency = .75,
+				MinDist = 40, MaxDist = 80, Pattern = "Random",
+				Mobs = { MOB_TYPES.Creep, MOB_TYPES.EliteCreep, MOB_TYPES.Wasp, MOB_TYPES.Tank}
+			},
+			{
+				Type = "Wave",
+				Name = "SWARM!!!!",
+				Duration = 1, BaseFrequency = 5,
+				MinDist = 30, MaxDist = 70, Pattern = "Circle",
+				Mobs = { MOB_TYPES.Creep, MOB_TYPES.Tank }
+			},
+			{
+				Type = "Wave",
+				Name = "lmao wave 3 what do you expect",
+				Duration = 1, BaseFrequency = 10,
+				MinDist = 30, MaxDist = 70, Pattern = "Random", 
+				Mobs = { MOB_TYPES.EliteCreep, MOB_TYPES.Tank }
+			},
+			{
+				Type = "Boss",
+				Name = "FOREST TITAN",
+				Mob = MOB_TYPES.BossCreep
+			},
+		}
+	},
 
-	VisualEvent:FireAllClients(startPos, targetOrDir, stats.ProjectileSpeed, stats.ProjectileColor, stats.IsBoomerang, stats.IsSniper, stats.ProjMaxDist)
-end
+	["Desert"] = {
+		Waves = {
+			{
+				Name = "Sandstorm",
+				Duration = 120, BaseFrequency = 0.8,
+				MinDist = 50, MaxDist = 100, Pattern = "Random",
+				Mobs = { MOB_TYPES.Runner }
+			},
+			{
+				Name = "SAND KING",
+				Duration = 999,
+				BaseFrequency = 10,
+				MinDist = 40, MaxDist = 80, Pattern = "Random",
+				Mob = { MOB_TYPES.BossTitan }
+			},
+		}
+	}
+}
 
-RunService.Heartbeat:Connect(function(dt)
-	for i = #activeProjectiles, 1, -1 do
-		local proj = activeProjectiles[i]
-
-		if tick() - proj.BirthTime > proj.Lifetime then
-			table.remove(activeProjectiles, i); continue
-		end
-
-		local currentPos = proj.Position
-		local nextPos
-		local moveStep = proj.Speed * dt
-
-		if proj.IsHoming then
-			local validTarget = false
-
-			if proj.IsReturning and proj.Target:IsA("Player") and proj.Target.Character then
-				local root = proj.Target.Character:FindFirstChild("HumanoidRootPart")
-				if root then
-					local dir = (root.Position - currentPos).Unit
-					nextPos = currentPos + (dir * moveStep)
-					proj.Direction = dir
-					validTarget = true
-					if (root.Position - currentPos).Magnitude < 3 then
-						table.remove(activeProjectiles, i); continue
-					end
-				end
-
-			elseif proj.Target and proj.Target.Parent then
-				local root = proj.Target.Parent:FindFirstChild("HumanoidRootPart")
-				if root then
-					local dir = (root.Position - currentPos).Unit
-					nextPos = currentPos + (dir * moveStep)
-					proj.Direction = dir
-					validTarget = true
-				end
-			end
-
-			if not validTarget then
-				proj.IsHoming = false
-				nextPos = currentPos + (proj.Direction * moveStep)
-			end
+local function WaitWithPause(duration)
+	local t = 0
+	while t < duration do
+		if workspace:GetAttribute("GamePaused") then
+			task.wait(0.1) -- Wait without incrementing timer
 		else
-			nextPos = currentPos + (proj.Direction * moveStep)
-		end
-
-		if proj.IsBoomerang and not proj.IsReturning then
-			if (currentPos - proj.StartPos).Magnitude >= proj.ProjMaxDist then
-				
-				proj.IsReturning = true
-				proj.IsHoming = true
-				proj.Target = proj.Owner
-				proj.HitHistory = {} 
-
-				VisualEvent:FireAllClients(currentPos, proj.Owner.Character.HumanoidRootPart, proj.Speed, proj.Color, proj.IsBoomerang, proj.IsSniper, proj.ProjMaxDist)
-				print("returned boomerang")
-			end
-		end
-
-		local dist = (nextPos - currentPos).Magnitude
-		local dir = (nextPos - currentPos).Unit
-
-		local rayParams = RaycastParams.new()
-		rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-		local ignoreList = {}
-		if proj.Owner.Character then table.insert(ignoreList, proj.Owner.Character) end
-
-		local dropsFolder = workspace:FindFirstChild("Drops")
-		if dropsFolder then table.insert(ignoreList, dropsFolder) end
-
-		local debrisFolder = workspace:FindFirstChild("Debris")
-		if debrisFolder then table.insert(ignoreList, debrisFolder) end
-
-		-- other projectiles like other physical stuff idk
-		-- table.insert(ignoreList, workspace:FindFirstChild("Projectiles")) 
-
-		rayParams.FilterDescendantsInstances = ignoreList
-
-		local hitResult = workspace:Raycast(currentPos, dir * dist, rayParams)
-
-		if not hitResult and proj.IsHoming and proj.Target and not proj.Target:IsA("Player") then
-			local tRoot = proj.Target.Parent and proj.Target.Parent:FindFirstChild("HumanoidRootPart")
-			if tRoot and (tRoot.Position - nextPos).Magnitude < HITBOX_SIZE then
-				hitResult = {Instance = tRoot} 
-			end
-		end
-
-		if hitResult then
-			local enemyModel = GetZombieFromPart(hitResult.Instance)
-
-			if enemyModel then
-				if not proj.HitHistory[enemyModel] then
-					local hum = enemyModel:FindFirstChild("Humanoid")
-					if hum and hum.Health > 0 then
-						proj.HitHistory[enemyModel] = true
-						proj.HitsRemaining = proj.HitsRemaining - 1
-						CombatUtils.DealDamage(proj.Owner, hum, proj.DamageStats) -- add damage tracker here
-
-						if proj.HitsRemaining <= 0 then
-							table.remove(activeProjectiles, i)
-						else
-							if proj.IsRicochet then
-								local newTarget = FindBounceTarget(nextPos, proj.BounceRange, proj.HitHistory)
-
-								if newTarget then
-									local newHum = newTarget:FindFirstChild("Humanoid")
-									proj.IsHoming = true
-									proj.Target = newHum
-									proj.Position = nextPos
-
-									VisualEvent:FireAllClients(nextPos, newHum, proj.Speed, proj.Color)
-								else
-									table.remove(activeProjectiles, i)
-								end
-							end
-							
-							if proj.IsPiercing then
-								proj.Position = nextPos 
-							end
-
-							if proj.IsHoming and not proj.IsReturning and not proj.IsRicochet then
-								proj.IsHoming = false 
-								proj.Target = nil
-							end
-							
-						end
-					end
-				else
-					proj.Position = nextPos
-				end
-			else
-				if hitResult.Instance.CanCollide then
-					if proj.IsBoomerang --[[and proj.IsReturning]] then
-						proj.Position = nextPos 
-					else
-						table.remove(activeProjectiles, i)
-					end
-				else
-					proj.Position = nextPos
-				end
-			end
-		else
-			proj.Position = nextPos
+			local dt = task.wait(0.1)
+			t = t + dt
 		end
 	end
+end
+
+-- toggle Pause
+function GameSession.SetPause(isPaused)
+	workspace:SetAttribute("GamePaused", isPaused)
+
+	local targets = {}
+
+	for _, mob in pairs(CollectionService:GetTagged("ZombieEntity")) do
+		table.insert(targets, mob)
+	end
+
+	for _, player in pairs(Players:GetPlayers()) do
+		table.insert(targets, player) -- StateManager handles Players correctly
+	end
+
+	-- 2. Apply or Remove Buff
+	for _, entity in pairs(targets) do
+		if isPaused then
+			-- Apply infinite Pause buff
+			StateManager.ApplyBuff(entity, "Pause", 999999)
+		else
+			-- Remove buff (Requires RemoveBuff function in StateManager)
+			StateManager.RemoveBuff(entity, "Pause")
+		end
+	end
+end
+
+PauseEvent.Event:Connect(function(isPaused)
+	GameSession.SetPause(isPaused)
 end)
 
-return ProjectileManager
+local function GenerateEndlessWave(waveNumber, difficulty)
+	-- [Same as before]
+	local pool = { MOB_TYPES.Creep, MOB_TYPES.EliteCreep }
+	if difficulty >= 2.0 then table.insert(pool, MOB_TYPES.Tank) end
+	if difficulty >= 4.0 then table.insert(pool, MOB_TYPES.BossCreep) end
+	local pattern = (waveNumber % 5 == 0) and "Circle" or "Random"
+
+	return {
+		Type = "Wave",
+		Name = "Endless Wave " .. waveNumber,
+		Duration = 60 + (waveNumber * 2),
+		BaseFrequency = 2.0,
+		MinDist = 40, MaxDist = 80,
+		Pattern = pattern, Mobs = pool
+	}
+end
+
+function GameSession.Start(mapName, initialDifficulty, playerCount, isEndless)
+	task.spawn(function()
+		local mapConfig = MAP_DATA[mapName]
+		if not mapConfig then warn("Invalid Map Name") return end
+
+		print(string.format("Starting %s | Endless: %s", mapName, tostring(isEndless)))
+
+		local currentDifficulty = initialDifficulty
+
+		-- MAP MODE
+		if mapConfig then 
+			for i, waveData in ipairs(mapConfig.Waves) do
+				if waveData.Type == "Wave" then
+					local waveTask = Spawner:StartWave(nil, currentDifficulty, playerCount, waveData)
+
+					-- USE CUSTOM WAIT
+					WaitWithPause(waveData.Duration)
+
+					if waveTask then task.cancel(waveTask) end
+
+				elseif waveData.Type == "Boss" then
+					print("!!! BOSS INCOMING !!!")
+					local bossModel = Spawner:SpawnBoss(waveData.Mob, currentDifficulty, playerCount)
+
+					if bossModel then
+						local humanoid = bossModel:WaitForChild("Humanoid")
+						-- Boss fight shouldn't rely on task.wait, but we can pause physics via StateManager
+						humanoid.Died:Wait()
+						print("!!! BOSS DEFEATED !!!")
+						WaitWithPause(3)
+					else
+						warn("Critical Error: Boss failed to spawn")
+					end
+				end
+				currentDifficulty = currentDifficulty + 0.5
+				WaitWithPause(3)
+			end
+		end
+
+		-- ENDLESS MODE
+		if isEndless then
+			print("--- ENTERING ENDLESS MODE ---")
+			local endlessWaveCount = 1
+
+			while true do
+				-- If paused, just loop idly here until unpaused
+				while workspace:GetAttribute("GamePaused") do task.wait(0.5) end
+
+				if #Players:GetPlayers() == 0 then break end
+
+				local waveData = GenerateEndlessWave(endlessWaveCount, currentDifficulty)
+				print(string.format(">>> %s | Diff: %.1f", waveData.Name, currentDifficulty))
+
+				local waveTask = Spawner:StartWave(nil, currentDifficulty, playerCount, waveData)
+
+				-- USE CUSTOM WAIT
+				WaitWithPause(waveData.Duration)
+
+				if waveTask then task.cancel(waveTask) end
+
+				endlessWaveCount = endlessWaveCount + 1
+				currentDifficulty = currentDifficulty + 0.5
+
+				WaitWithPause(math.max(1, 5 - (endlessWaveCount * 0.1))) 
+			end
+		else
+			print("GAME OVER - VICTORY")
+		end
+	end)
+end
+
+return GameSession
