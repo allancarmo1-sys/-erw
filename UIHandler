@@ -1,133 +1,105 @@
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players") -- Needed to check for players
-local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService") -- Needed for timer loop
+local Events = ReplicatedStorage:WaitForChild("GameEvents")
+local EasyVisuals = require(ReplicatedStorage:WaitForChild("Animations"):WaitForChild("EasyVisuals"))
 
-local VisualEvent = ReplicatedStorage:WaitForChild("VisualProjectileEvent")
+local LevelUpFrame = script.Parent:WaitForChild("LevelUpBar")
+local expBar = LevelUpFrame:WaitForChild("Bar")
 
-local function GetDebrisFolder()
-	local folder = workspace:FindFirstChild("Debris")
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = "Debris"
-		folder.Parent = workspace
+local rewardFrame = script.Parent:WaitForChild("ChooseReward")
+local timerLabel = rewardFrame:WaitForChild("RewardTimer"):WaitForChild("Timer")
+
+local option1Button = rewardFrame:WaitForChild("Option1Frame"):WaitForChild("OptionButton")
+local option2Button = rewardFrame:WaitForChild("Option2Frame"):WaitForChild("OptionButton")
+local option3Button = rewardFrame:WaitForChild("Option3Frame"):WaitForChild("OptionButton")
+
+local currentEffects = {}
+local activeTimerConnection = nil
+
+local RewardSelectedEvent = Events:FindFirstChild("RewardSelected") or Instance.new("RemoteEvent", Events)
+RewardSelectedEvent.Name = "RewardSelected"
+
+local function ClearEffects()
+	for _, eff in pairs(currentEffects) do
+		if eff then eff:Destroy() end
 	end
-	return folder
+	currentEffects = {}
 end
 
-local function CreatePart(color, startPos)
-	local debrisFolder = GetDebrisFolder()
-
-	local part = Instance.new("Part")
-	part.Size = Vector3.new(0.5, 0.5, 2)
-	part.Color = color
-	part.Material = Enum.Material.Neon
-	part.CanCollide = false
-	part.Anchored = true
-	part.CFrame = CFrame.new(startPos)
-	part.Parent = debrisFolder
-
-	return part
-end
-
-local function IsPlayerCharacter(part)
-	if not part or not part.Parent then return false end
-	return Players:GetPlayerFromCharacter(part.Parent) ~= nil
-end
-
-local function MoveDirectional(bullet, startPos, direction, speed, isBoomerang, isSniper, maxDist)
-	local startTime = tick()
-	local maxLifeTime = (maxDist or 300) / speed
-
-	bullet.CFrame = CFrame.new(startPos, startPos + direction)
-
-	local connection
-	connection = RunService.RenderStepped:Connect(function(dt)
-		if not bullet.Parent then connection:Disconnect() return end
-
-		local step = direction * speed * dt
-		local nextPos = bullet.Position + step
-
-		-- check collision for Normal bullets
-		if not isBoomerang and not isSniper then
-			local rayParams = RaycastParams.new()
-			rayParams.FilterType = Enum.RaycastFilterType.Exclude
-			rayParams.FilterDescendantsInstances = {Players.LocalPlayer.Character, workspace.Debris}
-
-			local hitResult = workspace:Raycast(bullet.Position, step, rayParams)
-
-			if hitResult then
-				local hitHum = hitResult.Instance.Parent:FindFirstChild("Humanoid")
-				if hitHum or hitResult.Instance.CanCollide then
-					bullet:Destroy()
-					connection:Disconnect()
-					return
-				end
-			end
-		end
-
-		bullet.Position = nextPos
-
-		if tick() - startTime >= maxLifeTime then
-			bullet:Destroy()
-			connection:Disconnect()
-		end
-	end)
-end
-
-local function MoveHoming(bullet, targetPart, speed)
-	local connection
-	connection = RunService.RenderStepped:Connect(function(dt)
-		-- Safety Cleanup
-		if not bullet.Parent or not targetPart or not targetPart.Parent then 
-			if bullet.Parent then bullet:Destroy() end
-			connection:Disconnect() 
-			return 
-		end
-
-		local currentPos = bullet.Position
-		local targetPos = targetPart.Position or targetPart:FindFirstChild("HumanoidRootPart").Position
-
-		-- follow the target
-		local direction = (targetPos - currentPos).Unit
-		local step = direction * speed * dt
-
-		bullet.Position = currentPos + step
-		bullet.CFrame = CFrame.new(bullet.Position, targetPos)
-
-		-- destroy if it reaches the target
-		if (targetPos - currentPos).Magnitude < 2 then
-			bullet:Destroy()
-			connection:Disconnect()
-		end
-	end)
-end
-
-VisualEvent.OnClientEvent:Connect(function(startPos, targetData, speed, color, isBoomerang, isSniper, maxDist)
-	local bullet = CreatePart(color, startPos)
-
-	if typeof(targetData) == "Instance" then
-
-		local targetPart = targetData.Parent:FindFirstChild("HumanoidRootPart") or targetData.Parent:FindFirstChild("Torso") or targetData
-
-		if isBoomerang then
-			if IsPlayerCharacter(targetPart) then
-				MoveHoming(bullet, targetPart, speed)
-			else
-				local direction = (targetPart.Position - startPos).Unit
-				MoveDirectional(bullet, startPos, direction, speed, isBoomerang, isSniper, maxDist)
-			end
-
-		elseif isSniper then
-			local direction = (targetPart.Position - startPos).Unit
-			MoveDirectional(bullet, startPos, direction, speed, isBoomerang, isSniper, maxDist)
-
-		else
-			MoveHoming(bullet, targetPart, speed)
-		end
-
-	elseif typeof(targetData) == "Vector3" then
-		local direction = (targetData - startPos).Unit
-		MoveDirectional(bullet, startPos, direction, speed, isBoomerang, isSniper, maxDist)
+local function CleanupTimer()
+	if activeTimerConnection then
+		activeTimerConnection:Disconnect()
+		activeTimerConnection = nil
 	end
+	timerLabel.Text = ""
+end
+
+local function updateRewardOption(optButton, option)
+	if option.IsNew then
+		optButton.RarityLabel.Text = "New!"
+		optButton.RarityLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		optButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		optButton.RarityLabel.Text = option.Rarity
+		optButton.RarityLabel.TextColor3 = option.RarityColor
+		optButton.BackgroundColor3 = option.RarityColor
+	end
+	optButton.Description.ItemName.Text = option.Name
+	optButton.Description.ItemStats.Text = option.Description
+end
+
+Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
+	local percent = math.clamp(current / max, 0, 1)
+	expBar.Size = UDim2.new(percent, 0, 1, 0)
 end)
+
+Events.LevelUp.OnClientEvent:Connect(function(newLevel, rewardOptions, duration)
+	CleanupTimer() 
+	ClearEffects()
+
+	rewardFrame.Visible = true
+	local eff = EasyVisuals.new(rewardFrame.TopTextFrame.TextLabel, "Rainbow", .5)
+	table.insert(currentEffects, eff)
+	
+	for i, opt in ipairs(rewardOptions) do
+		local targetBtn
+		if i == 1 then targetBtn = option1Button
+		elseif i == 2 then targetBtn = option2Button
+		elseif i == 3 then targetBtn = option3Button
+		end
+
+		if targetBtn then
+			updateRewardOption(targetBtn, opt)
+			local eff = EasyVisuals.new(targetBtn, "WaveStroke", .5, 6, false, opt.RarityColor)
+			table.insert(currentEffects, eff)
+		end
+	end
+
+	-- START COUNTDOWN
+	local endTime = tick() + (duration or 15)
+
+	activeTimerConnection = RunService.Heartbeat:Connect(function()
+		local remaining = math.max(0, endTime - tick())
+
+		-- Format: "14.5"
+		timerLabel.Text = string.format("%.1f", remaining)
+
+		if remaining <= 0 then
+			CleanupTimer()
+			-- auto-Select option 1
+			SelectReward(1)
+		end
+	end)
+end)
+
+function SelectReward(rewardId)
+	CleanupTimer() -- Stop timer immediately
+	ClearEffects()
+
+	rewardFrame.Visible = false
+	RewardSelectedEvent:FireServer(rewardId)
+end
+
+option1Button.MouseButton1Click:Connect(function() SelectReward(1) end)
+option2Button.MouseButton1Click:Connect(function() SelectReward(2) end)
+option3Button.MouseButton1Click:Connect(function() SelectReward(3) end)
