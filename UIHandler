@@ -1,0 +1,136 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService") 
+local Events = ReplicatedStorage:WaitForChild("GameEvents")
+local EasyVisuals = require(ReplicatedStorage:WaitForChild("Animations"):WaitForChild("EasyVisuals"))
+
+local HUD = script.Parent:WaitForChild("HUD")
+local LevelUpFrame = HUD:WaitForChild("LevelUpBar")
+local expBar = LevelUpFrame:WaitForChild("Bar")
+
+local rewardFrame = script.Parent:WaitForChild("ChooseReward")
+local timerLabel = rewardFrame:WaitForChild("RewardTimer"):WaitForChild("Timer")
+local gameTimerLabel = HUD:WaitForChild("TimeLeft"):WaitForChild("TimeCounter")
+
+local option1Button = rewardFrame:WaitForChild("Option1Frame"):WaitForChild("OptionButton")
+local option2Button = rewardFrame:WaitForChild("Option2Frame"):WaitForChild("OptionButton")
+local option3Button = rewardFrame:WaitForChild("Option3Frame"):WaitForChild("OptionButton")
+
+local currentEffects = {}
+local activeTimerConnection = nil
+
+local RewardSelectedEvent = Events:FindFirstChild("RewardSelected") or Instance.new("RemoteEvent", Events)
+RewardSelectedEvent.Name = "RewardSelected"
+
+local function ClearEffects()
+	for _, eff in pairs(currentEffects) do
+		if eff then eff:Destroy() end
+	end
+	currentEffects = {}
+end
+
+local function CleanupTimer()
+	if activeTimerConnection then
+		activeTimerConnection:Disconnect()
+		activeTimerConnection = nil
+	end
+	timerLabel.Text = ""
+end
+
+local function updateRewardOption(optButton, option)
+	if option.IsNew then
+		optButton.RarityLabel.Text = "New!"
+		optButton.RarityLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		optButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		optButton.RarityLabel.Text = option.Rarity
+		optButton.RarityLabel.TextColor3 = option.RarityColor
+		optButton.BackgroundColor3 = option.RarityColor
+	end
+	optButton.Description.ItemName.Text = option.Name
+	optButton.Description.ItemStats.Text = option.Description
+end
+
+local function SetupGameTimer()
+	local elapsedTime = 0
+	local isBossActive = false
+
+	local function CheckBossState()
+		local bosses = CollectionService:GetTagged("Boss") 
+		isBossActive = (#bosses > 0)
+	end
+
+	CollectionService:GetInstanceAddedSignal("Boss"):Connect(CheckBossState)
+	CollectionService:GetInstanceRemovedSignal("Boss"):Connect(CheckBossState)
+
+	RunService.Heartbeat:Connect(function(dt)
+		local isGamePaused = workspace:GetAttribute("GamePaused") 
+
+		if not isGamePaused and not isBossActive then
+			elapsedTime = elapsedTime + dt
+
+			-- Format: MM:SS
+			local minutes = math.floor(elapsedTime / 60)
+			local seconds = math.floor(elapsedTime % 60)
+			gameTimerLabel.Text = string.format("%02d:%02d", minutes, seconds)
+		end
+	end)
+end
+
+Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
+	local percent = math.clamp(current / max, 0, 1)
+	expBar.Size = UDim2.new(percent, 0, 1, 0)
+end)
+
+Events.LevelUp.OnClientEvent:Connect(function(newLevel, rewardOptions, duration)
+	CleanupTimer() 
+	ClearEffects()
+
+	rewardFrame.Visible = true
+	local eff = EasyVisuals.new(rewardFrame.TopTextFrame.TextLabel, "Rainbow", .5)
+	table.insert(currentEffects, eff)
+	
+	for i, opt in ipairs(rewardOptions) do
+		local targetBtn
+		if i == 1 then targetBtn = option1Button
+		elseif i == 2 then targetBtn = option2Button
+		elseif i == 3 then targetBtn = option3Button
+		end
+
+		if targetBtn then
+			updateRewardOption(targetBtn, opt)
+			local eff = EasyVisuals.new(targetBtn, "WaveStroke", .5, 6, false, opt.RarityColor)
+			table.insert(currentEffects, eff)
+		end
+	end
+
+	-- START COUNTDOWN
+	local endTime = tick() + (duration or 15)
+
+	activeTimerConnection = RunService.Heartbeat:Connect(function()
+		local remaining = math.max(0, endTime - tick())
+
+		-- Format: "14.5"
+		timerLabel.Text = string.format("%.1f", remaining)
+
+		if remaining <= 0 then
+			CleanupTimer()
+			-- auto-Select option 1
+			SelectReward(1)
+		end
+	end)
+end)
+
+function SelectReward(rewardId)
+	CleanupTimer() 
+	ClearEffects()
+
+	rewardFrame.Visible = false
+	RewardSelectedEvent:FireServer(rewardId)
+end
+
+option1Button.MouseButton1Click:Connect(function() SelectReward(1) end)
+option2Button.MouseButton1Click:Connect(function() SelectReward(2) end)
+option3Button.MouseButton1Click:Connect(function() SelectReward(3) end)
+
+SetupGameTimer()
