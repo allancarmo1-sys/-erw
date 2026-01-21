@@ -1,105 +1,284 @@
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local CharacterStats = {}
+local PlayerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService") -- Needed for timer loop
-local Events = ReplicatedStorage:WaitForChild("GameEvents")
-local EasyVisuals = require(ReplicatedStorage:WaitForChild("Animations"):WaitForChild("EasyVisuals"))
 
-local LevelUpFrame = script.Parent:WaitForChild("LevelUpBar")
-local expBar = LevelUpFrame:WaitForChild("Bar")
+local sessionStats = {}
+local WEAPON_SOURCE = ReplicatedStorage:WaitForChild("Items"):WaitForChild("Weapons")
 
-local rewardFrame = script.Parent:WaitForChild("ChooseReward")
-local timerLabel = rewardFrame:WaitForChild("RewardTimer"):WaitForChild("Timer")
+local ADDITIVE_STATS = {
+	["PierceCount"] = true,
+	["Bounces"] = true,
+	["Amount"] = true,
+	["ExtraJumps"] = true,
+	["Duration"] = true,
+	["Knockback"] = true,
+}
 
-local option1Button = rewardFrame:WaitForChild("Option1Frame"):WaitForChild("OptionButton")
-local option2Button = rewardFrame:WaitForChild("Option2Frame"):WaitForChild("OptionButton")
-local option3Button = rewardFrame:WaitForChild("Option3Frame"):WaitForChild("OptionButton")
+-- === DEFAULT DATA (New Profile) ===
+local DEFAULT_STATS = {
+	MaxHP = 100, --F
+	HPRegen = 10, --F
+	Lifesteal = 0, --M
+	Overheal = 0, --F
+	Shield = 0, --F
+	Armor = 0, --M
+	Thorns = 0, --F
+	Evasion = 0, --M
 
-local currentEffects = {}
-local activeTimerConnection = nil
+	Damage = 1, --M
+	CritChance = 0, --M
+	CritDamage = 0, --M
+	Cooldown = 1, --M
+	Amount = 0, --F
+	Bounces = 0, --F
 
-local RewardSelectedEvent = Events:FindFirstChild("RewardSelected") or Instance.new("RemoteEvent", Events)
-RewardSelectedEvent.Name = "RewardSelected"
+	Range = 1, --M
+	AttackSpeed = 1, --M
+	Duration = 1, --F
+	DamageToElites = 1, --M
+	Knockback = 0, --F
+	Speed = 5, --M
 
-local function ClearEffects()
-	for _, eff in pairs(currentEffects) do
-		if eff then eff:Destroy() end
+	ExtraJumps = 0, --F
+	JumpPower = 1, --M
+	Luck = 1, --M
+	Difficulty = 1, --F
+
+	Magnet = 1, --M
+	EXPGain = 1, --F
+	GoldGain = 1, --F
+
+	-- pet stats
+	PetAmount = 1,
+	PetDamage = 1,
+	PetCooldown = 1,
+
+	-- for testing, leave at 1. On release, at 0
+	Rerolls = 1,
+	Skips = 1,
+	Banishes = 1,
+	ExtraLives = 1,
+
+	-- invisible stats
+	Gold = 0,
+
+	IncomingDamageMulti = 1, --M
+	MaxWeapons = 2,
+	MaxCharms = 2,
+
+	UnlockedItems = {
+		Weapons = {"Bouncy", "Sniper", "Boomerang"},
+		Charms = {"Spinach", "Clover"}
+	},
+
+	-- format: { ["Sniper"] = 1, ["Spinach"] = 2 }
+	Inventory = {
+		Weapons = {},
+		Charms = {}
+	},
+
+}
+
+-- === HELPER: DEEP COPY ===
+local function deepCopy(original)
+	local copy = {}
+	for k, v in pairs(original) do
+		copy[k] = type(v) == "table" and deepCopy(v) or v
 	end
-	currentEffects = {}
+	return copy
 end
 
-local function CleanupTimer()
-	if activeTimerConnection then
-		activeTimerConnection:Disconnect()
-		activeTimerConnection = nil
-	end
-	timerLabel.Text = ""
-end
+function CharacterStats.InitPlayer(player)
+	local key = "Player_" .. player.UserId
+	PlayerDataStore:RemoveAsync(key)
+	local success, savedData = pcall(function() return PlayerDataStore:GetAsync(key) end)
 
-local function updateRewardOption(optButton, option)
-	if option.IsNew then
-		optButton.RarityLabel.Text = "New!"
-		optButton.RarityLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-		optButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	if success and savedData then
+		sessionStats[player] = deepCopy(DEFAULT_STATS)
+		if savedData.Gold then sessionStats[player].Gold = savedData.Gold end
+		if savedData.Inventory then sessionStats[player].Inventory = savedData.Inventory end
+		print("Loaded data for " .. player.Name)
 	else
-		optButton.RarityLabel.Text = option.Rarity
-		optButton.RarityLabel.TextColor3 = option.RarityColor
-		optButton.BackgroundColor3 = option.RarityColor
-	end
-	optButton.Description.ItemName.Text = option.Name
-	optButton.Description.ItemStats.Text = option.Description
-end
-
-Events.ExpUpdate.OnClientEvent:Connect(function(current, max, level)
-	local percent = math.clamp(current / max, 0, 1)
-	expBar.Size = UDim2.new(percent, 0, 1, 0)
-end)
-
-Events.LevelUp.OnClientEvent:Connect(function(newLevel, rewardOptions, duration)
-	CleanupTimer() 
-	ClearEffects()
-
-	rewardFrame.Visible = true
-	local eff = EasyVisuals.new(rewardFrame.TopTextFrame.TextLabel, "Rainbow", .5)
-	table.insert(currentEffects, eff)
-	
-	for i, opt in ipairs(rewardOptions) do
-		local targetBtn
-		if i == 1 then targetBtn = option1Button
-		elseif i == 2 then targetBtn = option2Button
-		elseif i == 3 then targetBtn = option3Button
-		end
-
-		if targetBtn then
-			updateRewardOption(targetBtn, opt)
-			local eff = EasyVisuals.new(targetBtn, "WaveStroke", .5, 6, false, opt.RarityColor)
-			table.insert(currentEffects, eff)
-		end
+		sessionStats[player] = deepCopy(DEFAULT_STATS)
+		CharacterStats.AddItem(player, "Bouncy", "Weapon") 
+		print("New profile for " .. player.Name)
 	end
 
-	-- START COUNTDOWN
-	local endTime = tick() + (duration or 15)
-
-	activeTimerConnection = RunService.Heartbeat:Connect(function()
-		local remaining = math.max(0, endTime - tick())
-
-		-- Format: "14.5"
-		timerLabel.Text = string.format("%.1f", remaining)
-
-		if remaining <= 0 then
-			CleanupTimer()
-			-- auto-Select option 1
-			SelectReward(1)
-		end
+	player.CharacterAdded:Connect(function(char)
+		task.wait(0.2) 
+		CharacterStats:RefreshCharacter(player)
+		CharacterStats.EquipWeapons(player)
 	end)
-end)
 
-function SelectReward(rewardId)
-	CleanupTimer() -- Stop timer immediately
-	ClearEffects()
-
-	rewardFrame.Visible = false
-	RewardSelectedEvent:FireServer(rewardId)
+	if player.Character then
+		CharacterStats:RefreshCharacter(player)
+		CharacterStats.EquipWeapons(player)
+	end
 end
 
-option1Button.MouseButton1Click:Connect(function() SelectReward(1) end)
-option2Button.MouseButton1Click:Connect(function() SelectReward(2) end)
-option3Button.MouseButton1Click:Connect(function() SelectReward(3) end)
+function CharacterStats.SavePlayer(player)
+	local data = sessionStats[player]
+	if not data then return end
+	local key = "Player_" .. player.UserId
+	local saveTable = { Gold = data.Gold, Inventory = data.Inventory }
+	pcall(function() PlayerDataStore:SetAsync(key, saveTable) end)
+end
+
+function CharacterStats.GetStats(player)
+	return sessionStats[player] or deepCopy(DEFAULT_STATS)
+end
+
+function CharacterStats:GetStat(player, statName)
+	local data = sessionStats[player]
+	if data and data[statName] ~= nil then return data[statName] end
+	return DEFAULT_STATS[statName]
+end
+
+function CharacterStats.SetStat(player, statName, value)
+	local data = sessionStats[player]
+	if data then
+		data[statName] = value
+		if statName == "MaxHP" or statName == "Speed" or statName == "JumpPower" then
+			CharacterStats:RefreshCharacter(player)
+		end
+	end
+end
+
+local function SyncAttributes(weaponInstance, statTable)
+	local weaponName = weaponInstance.Name
+	local sourceTemplate = WEAPON_SOURCE:FindFirstChild(weaponName)
+	if not sourceTemplate then return end
+
+	for statName, invValue in pairs(statTable) do
+		local baseAttr = sourceTemplate:GetAttribute(statName)
+		if baseAttr then
+			local finalValue = ADDITIVE_STATS[statName] and (baseAttr + invValue) or (baseAttr * invValue)
+			weaponInstance:SetAttribute(statName, finalValue)
+		end
+	end
+end
+
+function CharacterStats.EquipWeapons(player)
+	local data = sessionStats[player]
+	if not data or not player.Character then return end
+
+	for weaponName, weaponData in pairs(data.Inventory.Weapons) do
+		if not player.Character:FindFirstChild(weaponName) then
+			local source = WEAPON_SOURCE:FindFirstChild(weaponName)
+			if source then
+				local clone = source:Clone()
+				clone.Name = weaponName
+				SyncAttributes(clone, weaponData.Stats) 
+				clone.Parent = player.Character
+				clone.Enabled = true
+			end
+		end
+	end
+end
+
+function CharacterStats.AddItem(player, itemId, itemType, upgradeData)
+	local data = sessionStats[player]
+	if not data then return end
+
+	if itemType == "Weapon" then
+		local inventoryEntry = data.Inventory.Weapons[itemId]
+		if not inventoryEntry then
+			local initialStats = {}
+			if upgradeData then
+				for stat, val in pairs(upgradeData) do initialStats[stat] = val end
+			else
+				initialStats = { Damage = 1, Cooldown = 1, Range = 1 }
+			end
+
+			data.Inventory.Weapons[itemId] = { Level = 1, Stats = initialStats }
+			if player.Character then
+				local source = WEAPON_SOURCE:FindFirstChild(itemId)
+				if source then
+					local clone = source:Clone()
+					clone.Name = itemId
+					SyncAttributes(clone, initialStats)
+					clone.Parent = player.Character
+					clone.Enabled = true
+				end
+			end
+		else
+			inventoryEntry.Level = inventoryEntry.Level + 1
+			if upgradeData then
+				for stat, amount in pairs(upgradeData) do
+					local defaultTracker = ADDITIVE_STATS[stat] and 0 or 1
+					local currentTracker = inventoryEntry.Stats[stat] or defaultTracker
+					inventoryEntry.Stats[stat] = math.floor((currentTracker + amount) * 100) / 100
+				end
+			end
+			if player.Character then
+				local liveWeapon = player.Character:FindFirstChild(itemId)
+				if liveWeapon then SyncAttributes(liveWeapon, inventoryEntry.Stats) end
+			end
+		end
+
+	elseif itemType == "Charm" then
+		local inventoryEntry = data.Inventory.Charms[itemId]
+
+		-- upgradeData is now always { StatName = Value }
+		if not inventoryEntry then
+			local initialStat = {}
+			if upgradeData then
+				for stat, amount in pairs(upgradeData) do
+					local current = CharacterStats:GetStat(player, stat)
+					CharacterStats.SetStat(player, stat, current + amount)
+					initialStat[stat] = amount
+				end
+			end
+
+			data.Inventory.Charms[itemId] = {
+				Level = 1,
+				Stats = initialStat 
+			}
+			print("Unlocked New Charm: " .. itemId)
+
+		else
+			inventoryEntry.Level = inventoryEntry.Level + 1
+
+			if upgradeData then
+				for stat, amount in pairs(upgradeData) do
+					local current = CharacterStats:GetStat(player, stat)
+					CharacterStats.SetStat(player, stat, current + amount)
+
+					local savedVal = inventoryEntry.Stats[stat] or 0
+					inventoryEntry.Stats[stat] = savedVal + amount
+				end
+			end
+			print("Upgraded " .. itemId .. " to Lvl " .. inventoryEntry.Level)
+		end
+	end
+end
+
+function CharacterStats.GetItemLevel(player, itemId)
+	local data = sessionStats[player]
+	if not data then return 0 end
+	local wep = data.Inventory.Weapons[itemId]
+	local charm = data.Inventory.Charms[itemId]
+	return wep or charm or 0
+end
+
+function CharacterStats:RefreshCharacter(player)
+	local char = player.Character
+	local hum = char and char:FindFirstChild("Humanoid")
+	local data = sessionStats[player]
+
+	if hum and data then
+		hum.MaxHealth = data.MaxHP
+		hum.JumpPower = data.JumpPower * 50
+		hum.WalkSpeed = data.Speed * 16
+	end
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	CharacterStats.SavePlayer(player)
+	sessionStats[player] = nil
+end)
+
+return CharacterStats
