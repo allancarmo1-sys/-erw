@@ -79,6 +79,8 @@ local DEFAULT_STATS = {
 		Weapons = {},
 		Charms = {}
 	},
+	
+	BanishedItems = {}
 
 }
 
@@ -91,6 +93,32 @@ local function deepCopy(original)
 	return copy
 end
 
+function CharacterStats.BanishItem(player, itemId)
+	local data = sessionStats[player]
+	if data then
+		data.BanishedItems[itemId] = true
+		print("Banished item:", itemId)
+	end
+end
+
+function CharacterStats.IsBanished(player, itemId)
+	local data = sessionStats[player]
+	if data and data.BanishedItems then
+		return data.BanishedItems[itemId] == true
+	end
+	return false
+end
+
+function CharacterStats.IsOwned(player, itemId)
+	local data = sessionStats[player]
+	if not data then return false end
+
+	local hasWeapon = data.Inventory.Weapons[itemId] ~= nil
+	local hasCharm = data.Inventory.Charms[itemId] ~= nil
+
+	return hasWeapon or hasCharm
+end
+
 function CharacterStats.InitPlayer(player)
 	local key = "Player_" .. player.UserId
 	PlayerDataStore:RemoveAsync(key)
@@ -100,6 +128,10 @@ function CharacterStats.InitPlayer(player)
 		sessionStats[player] = deepCopy(DEFAULT_STATS)
 		if savedData.Gold then sessionStats[player].Gold = savedData.Gold end
 		if savedData.Inventory then sessionStats[player].Inventory = savedData.Inventory end
+
+		-- Note: BanishedItems are reset on init (new session)
+		sessionStats[player].BanishedItems = {} 
+
 		print("Loaded data for " .. player.Name)
 	else
 		sessionStats[player] = deepCopy(DEFAULT_STATS)
