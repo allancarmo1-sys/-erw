@@ -1,0 +1,125 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+
+local Events = ReplicatedStorage:WaitForChild("GameEvents")
+local UpdateReviveListEvent = Events:WaitForChild("UpdateReviveList")
+local RequestReviveEvent = Events:WaitForChild("RequestRevive")
+local GetExtraLivesFunc = Events:WaitForChild("GetExtraLives") -- NEW
+
+local player = Players.LocalPlayer
+
+-- GUI REFS
+local HUD = script.Parent:WaitForChild("HUD")
+local ReviveListFrame = HUD:WaitForChild("ReviveList")
+
+local ConfirmFrame = script.Parent:WaitForChild("ConfirmReviveFrame")
+local ConfirmAvatar = ConfirmFrame:WaitForChild("AvatarImage")
+local ConfirmTitle = ConfirmFrame:WaitForChild("TitleLabel")
+local ConfirmMath = ConfirmFrame:WaitForChild("MathLabel")
+local ConfirmBtn = ConfirmFrame:WaitForChild("ConfirmButton")
+local CancelBtn = ConfirmFrame:WaitForChild("CancelButton")
+
+local ROBUX_PRODUCT_ID = 1001 -- Match your DevProduct ID
+
+-- STATE
+local activeReviveButtons = {} 
+local targetReviveUser = nil 
+
+-- === HELPER ===
+
+local function CreateReviveButton(userId, data)
+	if activeReviveButtons[userId] then activeReviveButtons[userId]:Destroy() end
+	
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0, 150, 0, 50)
+	frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	frame.BorderSizePixel = 2
+	
+	local avatar = Instance.new("ImageLabel", frame)
+	avatar.Size = UDim2.new(0, 40, 0, 40)
+	avatar.Position = UDim2.new(0, 5, 0, 5)
+	avatar.BackgroundTransparency = 1
+	avatar.Image = Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size180x180)
+	
+	local nameLbl = Instance.new("TextLabel", frame)
+	nameLbl.Size = UDim2.new(0, 90, 0, 20)
+	nameLbl.Position = UDim2.new(0, 50, 0, 5)
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.TextColor3 = Color3.new(1,1,1)
+	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+	nameLbl.Text = data.Name
+	
+	local infoLbl = Instance.new("TextLabel", frame)
+	infoLbl.Size = UDim2.new(0, 90, 0, 20)
+	infoLbl.Position = UDim2.new(0, 50, 0, 25)
+	infoLbl.BackgroundTransparency = 1
+	infoLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
+	infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+	infoLbl.Text = "Revive (1 Life)"
+	
+	local btn = Instance.new("TextButton", frame)
+	btn.Size = UDim2.new(1, 0, 1, 0)
+	btn.BackgroundTransparency = 1
+	btn.Text = ""
+	
+	-- === SECURE CLICK LOGIC ===
+	btn.MouseButton1Click:Connect(function()
+		-- 1. Ask Server for current lives (Prevents exploiting local variables)
+		local myLives = GetExtraLivesFunc:InvokeServer()
+		
+		targetReviveUser = Players:GetPlayerByUserId(userId)
+		if not targetReviveUser then return end
+
+		if myLives > 0 then
+			-- 2a. Has Lives -> Show Confirmation
+			ConfirmFrame.Visible = true
+			ConfirmAvatar.Image = avatar.Image
+			ConfirmTitle.Text = "Revive " .. data.Name .. "?"
+			ConfirmMath.Text = "Lives: " .. myLives .. " -> " .. (myLives - 1)
+		else
+			-- 2b. No Lives -> Prompt Purchase
+			MarketplaceService:PromptProductPurchase(player, ROBUX_PRODUCT_ID)
+		end
+	end)
+	
+	frame.Parent = ReviveListFrame
+	activeReviveButtons[userId] = frame
+end
+
+-- === EVENTS ===
+
+UpdateReviveListEvent.OnClientEvent:Connect(function(deadPlayersMap)
+	-- Cleanup old
+	for uid, frame in pairs(activeReviveButtons) do
+		if not deadPlayersMap[uid] then
+			frame:Destroy()
+			activeReviveButtons[uid] = nil
+			if targetReviveUser and targetReviveUser.UserId == uid then
+				ConfirmFrame.Visible = false
+				targetReviveUser = nil
+			end
+		end
+	end
+	
+	-- Add new (Exclude self)
+	for uidStr, data in pairs(deadPlayersMap) do
+		local uid = tonumber(uidStr)
+		if uid ~= player.UserId and not activeReviveButtons[uid] then
+			CreateReviveButton(uid, data)
+		end
+	end
+end)
+
+ConfirmBtn.MouseButton1Click:Connect(function()
+	if targetReviveUser then
+		RequestReviveEvent:FireServer(targetReviveUser, "UseLife")
+		ConfirmFrame.Visible = false
+		targetReviveUser = nil
+	end
+end)
+
+CancelBtn.MouseButton1Click:Connect(function()
+	ConfirmFrame.Visible = false
+	targetReviveUser = nil
+end)
