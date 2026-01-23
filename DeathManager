@@ -1,0 +1,144 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local Services = ReplicatedStorage:WaitForChild("MyServices"):WaitForChild("Services")
+local CharacterStats = require(Services:WaitForChild("CharacterStats"))
+
+local Events = ReplicatedStorage:WaitForChild("GameEvents")
+
+-- REMOTES
+local PlayerDiedEvent = Events:FindFirstChild("PlayerDied") or Instance.new("RemoteEvent", Events)
+PlayerDiedEvent.Name = "PlayerDied"
+
+local RequestReviveEvent = Events:FindFirstChild("RequestRevive") or Instance.new("RemoteEvent", Events)
+RequestReviveEvent.Name = "RequestRevive"
+
+local UpdateReviveListEvent = Events:FindFirstChild("UpdateReviveList") or Instance.new("RemoteEvent", Events)
+UpdateReviveListEvent.Name = "UpdateReviveList"
+
+-- NEW: RemoteFunction for secure syncing
+local GetExtraLivesFunc = Events:FindFirstChild("GetExtraLives") or Instance.new("RemoteFunction", Events)
+GetExtraLivesFunc.Name = "GetExtraLives"
+
+-- CONFIG
+local GOLD_REVIVE_COST = 500
+local REVIVE_WINDOW_TIME = 30
+
+-- STATE
+local DeadPlayers = {} -- { [Player] = tick_of_death }
+
+local DeathManager = {}
+
+local function BroadcastDeadPlayers()
+	local payload = {}
+	for pl, t in pairs(DeadPlayers) do
+		payload[pl.UserId] = {
+			Name = pl.Name,
+			DeadTime = t
+		}
+	end
+	UpdateReviveListEvent:FireAllClients(payload)
+end
+
+local function CheckGameOver()
+	local aliveCount = 0
+	for _, p in pairs(Players:GetPlayers()) do
+		if p.Character and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+			aliveCount += 1
+		end
+	end
+	
+	if aliveCount == 0 then
+		print("ALL PLAYERS DEAD - GAME OVER")
+		-- GameSession.EndGame() logic here
+	end
+end
+
+local function OnCharacterAdded(character)
+	local humanoid = character:WaitForChild("Humanoid")
+	local player = Players:GetPlayerFromCharacter(character)
+	
+	humanoid.Died:Connect(function()
+		if DeadPlayers[player] then return end
+		
+		print(player.Name .. " has died.")
+		DeadPlayers[player] = tick()
+		
+		-- 1. Notify Self
+		local canRevive = CharacterStats.CanBeRevived(player)
+		local myLives = CharacterStats:GetStat(player, "ExtraLives")
+		local myGold = CharacterStats:GetStat(player, "Gold")
+		PlayerDiedEvent:FireClient(player, canRevive, myLives, myGold, GOLD_REVIVE_COST, REVIVE_WINDOW_TIME)
+		
+		-- 2. Notify Friends
+		BroadcastDeadPlayers()
+		
+		task.delay(1, CheckGameOver)
+	end)
+end
+
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(OnCharacterAdded)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if DeadPlayers[player] then
+		DeadPlayers[player] = nil
+		BroadcastDeadPlayers()
+	end
+end)
+
+-- === NEW: Secure Stats Fetch ===
+function GetExtraLivesFunc.OnServerInvoke(player)
+	-- Directly return the authoritative value from Server Storage
+	return CharacterStats:GetStat(player, "ExtraLives")
+end
+
+-- === REVIVE HANDLER ===
+RequestReviveEvent.OnServerEvent:Connect(function(sender, targetPlayer, method) 
+	if not targetPlayer then targetPlayer = sender end
+	
+	-- 1. Validation
+	local deathTime = DeadPlayers[targetPlayer]
+	if not deathTime then return end
+	
+	if (tick() - deathTime) > REVIVE_WINDOW_TIME then
+		warn("Revive window expired.")
+		return
+	end
+	
+	if not CharacterStats.CanBeRevived(targetPlayer) then
+		warn("Player cannot be revived again.")
+		return
+	end
+	
+	local success = false
+	
+	-- 2. Payment
+	if method == "UseLife" then
+		local lives = CharacterStats:GetStat(sender, "ExtraLives")
+		if lives > 0 then
+			CharacterStats.SetStat(sender, "ExtraLives", lives - 1)
+			success = true
+			print(sender.Name .. " revived " .. targetPlayer.Name)
+		end
+		
+	elseif method == "UseGold" then
+		local gold = CharacterStats:GetStat(sender, "Gold")
+		if gold >= GOLD_REVIVE_COST then
+			CharacterStats.SetStat(sender, "Gold", gold - GOLD_REVIVE_COST)
+			success = true
+		end
+	end
+	
+	-- 3. Execution
+	if success then
+		CharacterStats.MarkAsRevived(targetPlayer)
+		DeadPlayers[targetPlayer] = nil
+		targetPlayer:LoadCharacter()
+		BroadcastDeadPlayers()
+	end
+end)
+
+return DeathManager
