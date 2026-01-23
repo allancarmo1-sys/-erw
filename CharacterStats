@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local DataStoreService = game:GetService("DataStoreService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local CharacterStats = {}
 local PlayerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
@@ -60,10 +61,11 @@ local DEFAULT_STATS = {
 	Rerolls = 1,
 	Skips = 1,
 	Banishes = 1,
-	ExtraLives = 1,
+	ExtraLives = 0,
 
 	-- invisible stats
 	Gold = 0,
+	RevivedThisGame = false,
 
 	IncomingDamageMulti = 1, --M
 	MaxWeapons = 2,
@@ -121,17 +123,13 @@ end
 
 function CharacterStats.InitPlayer(player)
 	local key = "Player_" .. player.UserId
-	PlayerDataStore:RemoveAsync(key)
 	local success, savedData = pcall(function() return PlayerDataStore:GetAsync(key) end)
 
 	if success and savedData then
 		sessionStats[player] = deepCopy(DEFAULT_STATS)
 		if savedData.Gold then sessionStats[player].Gold = savedData.Gold end
 		if savedData.Inventory then sessionStats[player].Inventory = savedData.Inventory end
-
-		-- Note: BanishedItems are reset on init (new session)
-		sessionStats[player].BanishedItems = {} 
-
+		if savedData.ExtraLives then sessionStats[player].ExtraLives = savedData.ExtraLives end
 		print("Loaded data for " .. player.Name)
 	else
 		sessionStats[player] = deepCopy(DEFAULT_STATS)
@@ -139,24 +137,40 @@ function CharacterStats.InitPlayer(player)
 		print("New profile for " .. player.Name)
 	end
 
+	-- Reset Session Flag on Join
+	sessionStats[player].RevivedThisGame = false
+
 	player.CharacterAdded:Connect(function(char)
 		task.wait(0.2) 
 		CharacterStats:RefreshCharacter(player)
 		CharacterStats.EquipWeapons(player)
 	end)
-
-	if player.Character then
-		CharacterStats:RefreshCharacter(player)
-		CharacterStats.EquipWeapons(player)
-	end
 end
 
 function CharacterStats.SavePlayer(player)
 	local data = sessionStats[player]
 	if not data then return end
 	local key = "Player_" .. player.UserId
-	local saveTable = { Gold = data.Gold, Inventory = data.Inventory }
+	local saveTable = { 
+		Gold = data.Gold, 
+		Inventory = data.Inventory,
+		ExtraLives = data.ExtraLives
+	}
 	pcall(function() PlayerDataStore:SetAsync(key, saveTable) end)
+end
+
+function CharacterStats.CanBeRevived(targetPlayer)
+	local data = sessionStats[targetPlayer]
+	if not data then return false end
+	-- Can only be revived if they haven't been revived yet this session
+	return not data.RevivedThisGame
+end
+
+function CharacterStats.MarkAsRevived(targetPlayer)
+	local data = sessionStats[targetPlayer]
+	if data then
+		data.RevivedThisGame = true
+	end
 end
 
 function CharacterStats.GetStats(player)
