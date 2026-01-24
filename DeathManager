@@ -17,7 +17,6 @@ RequestReviveEvent.Name = "RequestRevive"
 local UpdateReviveListEvent = Events:FindFirstChild("UpdateReviveList") or Instance.new("RemoteEvent", Events)
 UpdateReviveListEvent.Name = "UpdateReviveList"
 
--- NEW: RemoteFunction for secure syncing
 local GetExtraLivesFunc = Events:FindFirstChild("GetExtraLives") or Instance.new("RemoteFunction", Events)
 GetExtraLivesFunc.Name = "GetExtraLives"
 
@@ -26,16 +25,20 @@ local GOLD_REVIVE_COST = 500
 local REVIVE_WINDOW_TIME = 30
 
 -- STATE
-local DeadPlayers = {} -- { [Player] = tick_of_death }
+local DeadPlayers = {} 
 
 local DeathManager = {}
 
 local function BroadcastDeadPlayers()
 	local payload = {}
 	for pl, t in pairs(DeadPlayers) do
+		-- FETCH SKIN: Check Attribute "EquippedSkin", or Inventory, or default to "Default"
+		local skinName = pl:GetAttribute("EquippedSkin") or "Default"
+
 		payload[pl.UserId] = {
 			Name = pl.Name,
-			DeadTime = t
+			DeadTime = t,
+			Skin = skinName --
 		}
 	end
 	UpdateReviveListEvent:FireAllClients(payload)
@@ -51,7 +54,6 @@ local function CheckGameOver()
 
 	if aliveCount == 0 then
 		print("ALL PLAYERS DEAD - GAME OVER")
-		-- GameSession.EndGame() logic here
 	end
 end
 
@@ -65,13 +67,11 @@ local function OnCharacterAdded(character)
 		print(player.Name .. " has died.")
 		DeadPlayers[player] = tick()
 
-		-- 1. Notify Self
 		local canRevive = CharacterStats.CanBeRevived(player)
 		local myLives = CharacterStats:GetStat(player, "ExtraLives")
 		local myGold = CharacterStats:GetStat(player, "Gold")
 		PlayerDiedEvent:FireClient(player, canRevive, myLives, myGold, GOLD_REVIVE_COST, REVIVE_WINDOW_TIME)
 
-		-- 2. Notify Friends
 		BroadcastDeadPlayers()
 
 		task.delay(1, CheckGameOver)
@@ -89,41 +89,27 @@ Players.PlayerRemoving:Connect(function(player)
 	end
 end)
 
--- === NEW: Secure Stats Fetch ===
 function GetExtraLivesFunc.OnServerInvoke(player)
-	-- Directly return the authoritative value from Server Storage
 	return CharacterStats:GetStat(player, "ExtraLives")
 end
 
--- === REVIVE HANDLER ===
 RequestReviveEvent.OnServerEvent:Connect(function(sender, targetPlayer, method) 
 	if not targetPlayer then targetPlayer = sender end
 
-	-- 1. Validation
 	local deathTime = DeadPlayers[targetPlayer]
 	if not deathTime then return end
 
-	if (tick() - deathTime) > REVIVE_WINDOW_TIME then
-		warn("Revive window expired.")
-		return
-	end
-
-	if not CharacterStats.CanBeRevived(targetPlayer) then
-		warn("Player cannot be revived again.")
-		return
-	end
+	if (tick() - deathTime) > REVIVE_WINDOW_TIME then return end
+	if not CharacterStats.CanBeRevived(targetPlayer) then return end
 
 	local success = false
 
-	-- 2. Payment
 	if method == "UseLife" then
 		local lives = CharacterStats:GetStat(sender, "ExtraLives")
 		if lives > 0 then
 			CharacterStats.SetStat(sender, "ExtraLives", lives - 1)
 			success = true
-			print(sender.Name .. " revived " .. targetPlayer.Name)
 		end
-
 	elseif method == "UseGold" then
 		local gold = CharacterStats:GetStat(sender, "Gold")
 		if gold >= GOLD_REVIVE_COST then
@@ -132,7 +118,6 @@ RequestReviveEvent.OnServerEvent:Connect(function(sender, targetPlayer, method)
 		end
 	end
 
-	-- 3. Execution
 	if success then
 		CharacterStats.MarkAsRevived(targetPlayer)
 		DeadPlayers[targetPlayer] = nil
