@@ -3,94 +3,145 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 
 local Events = ReplicatedStorage:WaitForChild("GameEvents")
+local PlayerDiedEvent = Events:WaitForChild("PlayerDied")
 local UpdateReviveListEvent = Events:WaitForChild("UpdateReviveList")
 local RequestReviveEvent = Events:WaitForChild("RequestRevive")
-local GetExtraLivesFunc = Events:WaitForChild("GetExtraLives") -- NEW
+local GetExtraLivesFunc = Events:WaitForChild("GetExtraLives")
 
 local player = Players.LocalPlayer
 
--- GUI REFS
 local HUD = script.Parent:WaitForChild("HUD")
-local ReviveListFrame = HUD:WaitForChild("ReviveList")
+
+--selfrevive
+local DeathFrame = script.Parent:WaitForChild("DeathScreen") -- MAKE THIS FRAME
+DeathFrame.Visible = false
+
+local ReviveButton = DeathFrame:WaitForChild("ReviveFrame"):WaitForChild("ReviveButton")
+local BuyGoldBtn = DeathFrame:WaitForChild("ReviveGoldFrame"):WaitForChild("ReviveButton")
+
+--friendrevive
+local DeadPlayersContainer = HUD:WaitForChild("DeadPlayers")
+local TemplateFrame = ReplicatedStorage:WaitForChild("GUIElements"):WaitForChild("DeadPlayersItems"):WaitForChild("ListObjectFrame")
+TemplateFrame.Visible = false 
 
 local ConfirmFrame = script.Parent:WaitForChild("ConfirmReviveFrame")
-local ConfirmAvatar = ConfirmFrame:WaitForChild("AvatarImage")
-local ConfirmTitle = ConfirmFrame:WaitForChild("TitleLabel")
-local ConfirmMath = ConfirmFrame:WaitForChild("MathLabel")
-local ConfirmBtn = ConfirmFrame:WaitForChild("ConfirmButton")
-local CancelBtn = ConfirmFrame:WaitForChild("CancelButton")
+local ConfirmMath1 = ConfirmFrame:WaitForChild("TopFrame"):WaitForChild("BeforeLabel")
+local ConfirmMath2 = ConfirmFrame:WaitForChild("TopFrame"):WaitForChild("AfterLabel")
+local ConfirmBtn = ConfirmFrame:WaitForChild("YesFrame"):WaitForChild("YesButton")
+local CancelBtn = ConfirmFrame:WaitForChild("NoFrame"):WaitForChild("NoButton")
 
-local ROBUX_PRODUCT_ID = 1001 -- Match your DevProduct ID
+local ROBUX_PRODUCT_ID = 3519622042
 
--- STATE
 local activeReviveButtons = {} 
 local targetReviveUser = nil 
 
--- === HELPER ===
+--[[local function SetupSkinViewport(viewport, skinName)
+	viewport:ClearAllChildren()
+
+	-- 1. Find Skin Model
+	-- Assuming you have a folder: ReplicatedStorage.Assets.Skins
+	local skinsFolder = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("Skins")
+	local skinModel = skinsFolder and skinsFolder:FindFirstChild(skinName)
+
+	-- Fallback if skin not found
+	if not skinModel then 
+		skinModel = skinsFolder and skinsFolder:FindFirstChild("Default")
+	end
+
+	if skinModel then
+		local clone = skinModel:Clone()
+		clone.Parent = viewport
+
+		-- Setup Camera
+		local cam = Instance.new("Camera")
+		cam.Parent = viewport
+		viewport.CurrentCamera = cam
+
+		-- Position Camera to face the model's Head/PrimaryPart
+		local primary = clone.PrimaryPart or clone:FindFirstChild("Head") or clone:FindFirstChild("HumanoidRootPart")
+		if primary then
+			-- Adjust these offsets based on your model size
+			local forward = primary.CFrame.LookVector
+			local pos = primary.Position + (forward * 5) + Vector3.new(0, 0.5, 0)
+			cam.CFrame = CFrame.new(pos, primary.Position)
+		end
+	end
+end]]
+
+PlayerDiedEvent.OnClientEvent:Connect(function(canRevive, livesCount, goldCount, goldCost)
+	DeathFrame.Visible = true
+
+	if not canRevive then
+		UseLifeBtn.Visible = false
+		BuyGoldBtn.Visible = false
+		return
+	end
+
+	UseLifeBtn.Text = "Use Extra Life (" .. livesCount .. ")"
+	UseLifeBtn.Interactable = (livesCount > 0)
+
+	BuyGoldBtn.Text = "Revive with Gold (" .. goldCost .. ")"
+	BuyGoldBtn.Interactable = (goldCount >= goldCost)
+
+	BuyRobuxBtn.Text = "Buy Life (50 R$)"
+end)
+
+BuyGoldBtn.MouseButton1Click:Connect(function()
+	DeathFrame.Visible = false
+	RequestReviveEvent:FireServer("BuyGold")
+end)
+
+ReviveButton.MouseButton1Click:Connect(function()
+	MarketplaceService:PromptProductPurchase(Players.LocalPlayer, ROBUX_PRODUCT_ID)
+end)
 
 local function CreateReviveButton(userId, data)
 	if activeReviveButtons[userId] then activeReviveButtons[userId]:Destroy() end
 
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(0, 150, 0, 50)
-	frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-	frame.BorderSizePixel = 2
+	local frame = TemplateFrame:Clone()
+	frame.Name = "Revive_" .. userId
+	frame.Visible = true
 
-	local avatar = Instance.new("ImageLabel", frame)
-	avatar.Size = UDim2.new(0, 40, 0, 40)
-	avatar.Position = UDim2.new(0, 5, 0, 5)
-	avatar.BackgroundTransparency = 1
-	avatar.Image = Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size180x180)
+	local nameLabel = frame.PlayerFrame.PlayerName
+	if nameLabel then nameLabel.Text = data.Name end
 
-	local nameLbl = Instance.new("TextLabel", frame)
-	nameLbl.Size = UDim2.new(0, 90, 0, 20)
-	nameLbl.Position = UDim2.new(0, 50, 0, 5)
-	nameLbl.BackgroundTransparency = 1
-	nameLbl.TextColor3 = Color3.new(1,1,1)
-	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-	nameLbl.Text = data.Name
+	--[[local avatarContainer = frame:FindFirstChild("AvatarContainer") or frame:FindFirstChild("Avatar")
 
-	local infoLbl = Instance.new("TextLabel", frame)
-	infoLbl.Size = UDim2.new(0, 90, 0, 20)
-	infoLbl.Position = UDim2.new(0, 50, 0, 25)
-	infoLbl.BackgroundTransparency = 1
-	infoLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
-	infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-	infoLbl.Text = "Revive (1 Life)"
-
-	local btn = Instance.new("TextButton", frame)
-	btn.Size = UDim2.new(1, 0, 1, 0)
-	btn.BackgroundTransparency = 1
-	btn.Text = ""
-
-	-- === SECURE CLICK LOGIC ===
-	btn.MouseButton1Click:Connect(function()
-		-- 1. Ask Server for current lives (Prevents exploiting local variables)
-		local myLives = GetExtraLivesFunc:InvokeServer()
-
-		targetReviveUser = Players:GetPlayerByUserId(userId)
-		if not targetReviveUser then return end
-
-		if myLives > 0 then
-			-- 2a. Has Lives -> Show Confirmation
-			ConfirmFrame.Visible = true
-			ConfirmAvatar.Image = avatar.Image
-			ConfirmTitle.Text = "Revive " .. data.Name .. "?"
-			ConfirmMath.Text = "Lives: " .. myLives .. " -> " .. (myLives - 1)
-		else
-			-- 2b. No Lives -> Prompt Purchase
-			MarketplaceService:PromptProductPurchase(player, ROBUX_PRODUCT_ID)
+	if avatarContainer then
+		if avatarContainer:IsA("ViewportFrame") then
+			SetupSkinViewport(avatarContainer, data.Skin)
+		elseif avatarContainer:IsA("ImageLabel") then
+			-- If you use 2D images for skins, map skinName to ImageId here
+			-- avatarContainer.Image = "rbxassetid://..."
 		end
-	end)
+	end]]
 
-	frame.Parent = ReviveListFrame
+	-- 4. Setup Button Logic
+	-- Assuming the whole frame is a button, or there is a specific button inside
+	local btn = frame.ReviveFrame.ImageButton 
+
+	if btn then
+		btn.MouseButton1Click:Connect(function()
+			local myLives = GetExtraLivesFunc:InvokeServer()
+
+			targetReviveUser = Players:GetPlayerByUserId(userId)
+			if not targetReviveUser then return end
+
+			if myLives > 0 then
+				ConfirmFrame.Visible = true
+				ConfirmMath1.Text = myLives
+				ConfirmMath2.Text = myLives - 1
+			else
+				MarketplaceService:PromptProductPurchase(player, ROBUX_PRODUCT_ID)
+			end
+		end)
+	end
+
+	frame.Parent = DeadPlayersContainer
 	activeReviveButtons[userId] = frame
 end
 
--- === EVENTS ===
-
 UpdateReviveListEvent.OnClientEvent:Connect(function(deadPlayersMap)
-	-- Cleanup old
 	for uid, frame in pairs(activeReviveButtons) do
 		if not deadPlayersMap[uid] then
 			frame:Destroy()
@@ -102,7 +153,6 @@ UpdateReviveListEvent.OnClientEvent:Connect(function(deadPlayersMap)
 		end
 	end
 
-	-- Add new (Exclude self)
 	for uidStr, data in pairs(deadPlayersMap) do
 		local uid = tonumber(uidStr)
 		if uid ~= player.UserId and not activeReviveButtons[uid] then
